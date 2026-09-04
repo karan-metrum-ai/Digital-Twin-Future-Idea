@@ -55,6 +55,27 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
     const explodeItems: any[] = rack.userData.items; const doors: any = rack.userData.doors;
 
+    // Name tags for the exploded view: one canvas-text sprite per item, parented to the item's group so it
+    // travels with it; faded in by setExplode once the stack has separated enough to read.
+    const KIND_NAME: Record<string, string> = { server: 'Server', blank: 'Blanking panel', switch: 'Switch', patch: 'Patch panel', cablemgr: 'Cable manager', hpdu: 'Horizontal PDU', pdu: 'Vertical PDU', nuc: 'NUC shelf' };
+    const makeLabel = (text: string) => {
+      const c = document.createElement('canvas'); c.width = 512; c.height = 80; const g2 = c.getContext('2d')!;
+      g2.fillStyle = 'rgba(12,13,16,0.86)'; g2.beginPath(); g2.roundRect(2, 2, 508, 76, 14); g2.fill();
+      g2.strokeStyle = 'rgba(255,255,255,0.22)'; g2.lineWidth = 2; g2.stroke();
+      g2.fillStyle = '#eef0f4'; g2.font = '600 32px "Helvetica Neue", Helvetica, Arial, sans-serif'; g2.textAlign = 'center'; g2.textBaseline = 'middle'; g2.fillText(text, 256, 42);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, opacity: 0 }));
+      sp.scale.set(0.42, 0.066, 1); sp.renderOrder = 10; sp.visible = false; sp.userData.thermalSkip = true;
+      return sp;
+    };
+    const labels: THREE.Sprite[] = explodeItems.map((it) => {
+      const sp = makeLabel(`${KIND_NAME[it.kind] ?? it.kind} · ${it.label}`);
+      const b = it.bbox, cz = (b.min.z + b.max.z) / 2;
+      if (it.kind === 'pdu') sp.position.set((b.min.x + b.max.x) / 2, b.max.y + 0.06, cz); // above the vertical PDU
+      else sp.position.set(b.max.x + 0.26, (b.min.y + b.max.y) / 2, b.max.z + 0.02); // off the item's right edge
+      it.group.add(sp); return sp;
+    });
+
     // Front door: closed by default, click to swing it open (click again to close). Combines with the
     // exploded-view slider via `updateDoorTargets` — either one can hold the door open.
     let explodeVal = 0, doorOpen = false;
@@ -86,8 +107,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
       if (doors) {
-        if (doors.hingeTargetY !== undefined) doors.hinge.rotation.y += (doors.hingeTargetY - doors.hinge.rotation.y) * 0.12;
-        if (doors.rdTargetZ !== undefined) doors.rd.position.z += (doors.rdTargetZ - doors.rd.position.z) * 0.12;
+        if (doors.hingeTargetY !== undefined) doors.hinge.rotation.y += (doors.hingeTargetY - doors.hinge.rotation.y) * 0.045;
+        if (doors.rdTargetZ !== undefined) doors.rd.position.z += (doors.rdTargetZ - doors.rd.position.z) * 0.045;
       }
       controls.update(); renderer.render(scene, camera); raf = requestAnimationFrame(loop);
     };
@@ -100,6 +121,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setExplode(t: number) {
         explodeItems.forEach((it) => it.target.set(it.ex * t, it.ey * t, it.ez * t));
         (rack.userData.cableLikeObjects as THREE.Object3D[]).forEach((o) => { o.visible = t < 0.04; });
+        const labelAlpha = Math.min(1, Math.max(0, (t - 0.25) / 0.35)); // names appear once the stack has opened up
+        labels.forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; });
         explodeVal = t; updateDoorTargets();
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },

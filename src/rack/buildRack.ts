@@ -36,6 +36,24 @@ export function buildRack(THREE) {
   buildNuc(ctx, 40); // 3U NUC shelf (U40-42) at the top of the rack
 
   wireCabling(ctx, { servers, pduOutlets, swA, swB, ppA, ppB, cmA, cmB });
+  layoutExplodedView(ctx);
 
   return ctx.g;
+}
+
+// Exploded-view targets. Rather than fanning items symmetrically about the rack's mid-height (which pushed the
+// bottom half through the floor), every U-mounted item is re-stacked in its original order in front of the
+// rack with an even gap between neighbours, starting just above the floor — so each one is separately
+// readable without the stack outgrowing the room. The vertical PDUs keep their sideways slide. Each item also
+// records its bounding box so ServerRackTwin can hang a name label off it.
+function layoutExplodedView(ctx) {
+  const { THREE, items } = ctx;
+  const GAP = 0.035, FLOOR_Y = 0.16, PULL_Z = 0.45;
+  const measured = items.map((it) => { const b = new THREE.Box3().setFromObject(it.group); it.bbox = b; return { it, yc: (b.min.y + b.max.y) / 2, h: b.max.y - b.min.y }; });
+  let y = FLOOR_Y;
+  for (const m of measured.filter((m) => m.it.kind !== 'pdu').sort((a, b) => a.yc - b.yc)) {
+    m.it.ey = (y + m.h / 2) - m.yc;
+    m.it.ez = PULL_Z;
+    y += m.h + GAP;
+  }
 }
