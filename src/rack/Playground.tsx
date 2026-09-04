@@ -6,7 +6,7 @@ import type { RackView } from './types';
 
 const COMPONENT_KIND_LABEL: Record<string, string> = {
   server: 'Servers', blank: 'Blanking panels', switch: 'Network switches', patch: 'Patch panels',
-  cablemgr: 'Cable managers', hpdu: 'Horizontal PDU', pdu: 'Vertical PDUs', nuc: 'NUC (mini PC)',
+  cablemgr: 'Cable managers', hpdu: 'Horizontal PDU', pdu: 'Vertical PDUs', nuc: 'NUC shelf (8× mini PC)',
 };
 
 export function Playground() {

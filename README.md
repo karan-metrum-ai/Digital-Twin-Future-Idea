@@ -41,7 +41,7 @@ src/rack/
     CableManager.ts               1U cable manager
     HorizontalPdu.ts                1U C13 PDU
     VerticalPdu.ts                   Full-height rear PDU
-    Nuc.ts                            Shelf-mounted mini PC accessory
+    Nuc.ts                            3U shelf with eight mini PCs on edge + patch leads
   cabling/wireCabling.ts      Patch/power/network cable routing pass
   environment/                Floor, neighbour racks, studio lighting
   thermal/                    Airflow particle sim + thermal camera shader

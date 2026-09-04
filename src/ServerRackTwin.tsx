@@ -54,6 +54,32 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     fit(); const ro = new ResizeObserver(fit); ro.observe(host);
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
     const explodeItems: any[] = rack.userData.items; const doors: any = rack.userData.doors;
+
+    // Front door: closed by default, click to swing it open (click again to close). Combines with the
+    // exploded-view slider via `updateDoorTargets` — either one can hold the door open.
+    let explodeVal = 0, doorOpen = false;
+    const updateDoorTargets = () => {
+      if (!doors) return;
+      const frontAmt = Math.max(explodeVal, doorOpen ? 1 : 0);
+      doors.hingeTargetY = doors.hingeClosedY + frontAmt * 4.27; // swings anticlockwise (viewed from above) away from the rack
+      doors.rdTargetZ = doors.rdClosedZ - explodeVal * 0.5;
+    };
+    const raycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+    const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
+    const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
+    let downX = 0, downY = 0, downT = 0;
+    const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); };
+    const onPointerUp = (e: PointerEvent) => {
+      const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
+      if (dragged) return; // an orbit drag, not a click
+      if (hitsFrontDoor(e)) { doorOpen = !doorOpen; updateDoorTargets(); }
+    };
+    const onPointerMove = (e: PointerEvent) => { renderer.domElement.style.cursor = hitsFrontDoor(e) ? 'pointer' : ''; };
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+
     let raf = 0; const t0 = performance.now();
     const loop = () => {
       const t = (performance.now() - t0) / 1000; heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
@@ -74,8 +100,9 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setExplode(t: number) {
         explodeItems.forEach((it) => it.target.set(it.ex * t, it.ey * t, it.ez * t));
         (rack.userData.cableLikeObjects as THREE.Object3D[]).forEach((o) => { o.visible = t < 0.04; });
-        if (doors) { doors.hingeTargetY = doors.hingeClosedY - t * 1.9; doors.rdTargetZ = doors.rdClosedZ - t * 0.5; }
+        explodeVal = t; updateDoorTargets();
       },
+      setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
       airflow: showAirflow,
       async exportGLB() { const blob: Blob = await new Promise((res) => new GLTFExporter().parse(rack, (r) => res(new Blob([r as ArrayBuffer], { type: 'model/gltf-binary' })), () => {}, { binary: true })); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-rack-42u.glb'; a.click(); },
       slots: rack.userData.slots as Slot[], temps: thermal.temps as number[],
@@ -83,7 +110,13 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     };
     onItems?.(apiRef.current.items);
     if (explode) apiRef.current.setExplode(explode);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); controls.dispose(); renderer.dispose(); host.removeChild(renderer.domElement); apiRef.current = null; };
+    return () => {
+      cancelAnimationFrame(raf); ro.disconnect(); controls.dispose();
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.dispose(); host.removeChild(renderer.domElement); apiRef.current = null;
+    };
   }, []);
 
   useEffect(() => { apiRef.current?.setThermal(v === 'thermal'); }, [v]);
@@ -126,7 +159,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       )}
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>42U enterprise rack</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan</span>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click the front door to open it</span>
       </div>
     </div>
   );
