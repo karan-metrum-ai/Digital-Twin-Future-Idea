@@ -3,8 +3,8 @@
 // Airflow / heat visualisation: cool intake streaks drawn into the server fronts, hot exhaust
 // plumes leaving the rear and rising. GPU-driven points; only a time uniform changes per frame.
 
-export function buildHeatSim(THREE, slots) {
-  const N = 2600;
+export function buildHeatSim(THREE, slots, density = 1) {
+  const N = Math.max(200, Math.round(2600 * density));
   const seed = new Float32Array(N), slotY = new Float32Array(N), slotH = new Float32Array(N), slotZr = new Float32Array(N), kind = new Float32Array(N);
   let s = 11; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < N; i++) { const sl = slots[Math.floor(rnd() * slots.length)]; seed[i] = rnd(); slotY[i] = sl.y; slotH[i] = sl.h; slotZr[i] = sl.zr; kind[i] = i % 5 === 0 ? 1 : 0; }

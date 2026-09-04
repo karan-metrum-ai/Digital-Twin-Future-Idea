@@ -14,12 +14,25 @@ npm run dev
 The app boots the `Playground` demo from `src/rack/Playground.tsx`:
 
 - Visual / Thermal camera / Liquid cooling views
+- Two-row hot-aisle hall: the interactive rack sits in the middle of a row of five facing front, with a second row of
+  five behind it turned 180° so the rears face each other across a 1.2 m hot aisle. The nine neighbours are baked
+  replicas of the procedural rack (merged per material, so each costs a few dozen draw calls) — see
+  `src/rack/environment/RackRow.ts` for the layout constants
+- Heat simulation and liquid cooling run on all ten racks, not just the interactive one. Every rack gets its own
+  intake/exhaust airflow particles and cold-air vapour off its own floor grille (`RackAirflow.ts`, reduced particle
+  density on the nine replicas), and its own liquid-cooling manifolds, feed hoses and per-server quick-disconnect
+  branch hoses with animated coolant flow, fed by that row's overhead headers and CDU. The interactive rack's hoses
+  stay individually meshed (so they can hide per-server in the exploded view); the other nine racks' hose hardware
+  is built once and baked+merged per material, then cloned at each placement, and their coolant-flow particles share
+  one animated geometry buffer across all ten racks — so wiring every rack costs a few dozen extra draw calls, not
+  thousands.
 - Liquid cooling mode — direct-to-chip loop modelled on a real DLC row: overhead stainless supply/return headers
-  with valved drops into every rack, an end-of-row CDU, side-mounted rack manifolds and black quick-disconnect
-  branch hoses (blue/red collars) with animated coolant flow; the rear door lifts off and the camera flies to a rear
-  three-quarter view. Telemetry HUD: flow (L/min) and rack ΔP (bar) gauges, 1 Hz time-series for pump efficiency,
-  supply/return ΔT and CDU energy, and predictive analytics (pump bearing vibration vs ISO 10816 zones with a
-  30-day forecast to alarm, coolant conductivity / pH / particulate degradation). `?view=liquid` deep-links it.
+  (one pair per row) with valved drops into every rack, an end-of-row CDU per row, side-mounted rack manifolds and
+  black quick-disconnect branch hoses (blue/red collars) with animated coolant flow on every rack; the rear door
+  lifts off and the camera flies to a rear three-quarter view. Telemetry HUD (scoped to the interactive rack's
+  CDU-01): flow (L/min) and rack ΔP (bar) gauges, 1 Hz time-series for pump efficiency, supply/return ΔT and CDU
+  energy, and predictive analytics (pump bearing vibration vs ISO 10816 zones with a 30-day forecast to alarm,
+  coolant conductivity / pH / particulate degradation). `?view=liquid` deep-links it.
 - Front covers and airflow toggles
 - Randomize load temperatures
 - Exploded view — pulls every component (servers, blanks, switches, patch panels, cable managers, PDUs, NUC) apart, with a live parts-count legend
@@ -49,10 +62,12 @@ src/rack/
     VerticalPdu.ts                   Full-height rear PDU
     Nuc.ts                            3U shelf with eight mini PCs on edge + patch leads
   cabling/wireCabling.ts      Patch/power/network cable routing pass
-  environment/                Floor, neighbour racks, studio lighting
+  environment/                Floor, ladder + lights, cooling grill
+    RackRow.ts                Two-row hot-aisle layout + baked rack replicas
+    RackAirflow.ts            Heat/vapor particle sims instanced at every replica rack
   thermal/                    Airflow particle sim + thermal camera shader
   liquid/                     Liquid cooling mode
-    LiquidLoop.ts             Overhead headers + drops, end-of-row CDU, rack manifolds, branch hoses, flow particles
+    LiquidLoop.ts             Headers/drops/CDU per row + manifolds/hoses/flow on every rack (baked+merged for replicas)
     LiquidLoopSim.ts          Lumped hydraulic loop model + 30-day condition forecasts (pure TS)
     charts.tsx                SVG chart kit: line chart w/ hover + table view, gauge, stat tile
     LiquidHud.tsx             The telemetry / predictive-analytics panel

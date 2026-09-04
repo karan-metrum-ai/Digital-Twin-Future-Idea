@@ -8,6 +8,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { buildRack } from './rack/buildRack';
 import { buildEnvironment } from './rack/environment/Environment';
+import { buildRackReplicas } from './rack/environment/RackRow';
+import { buildRackAirflowReplicas } from './rack/environment/RackAirflow';
 import { buildEnvMap } from './rack/environment/EnvironmentMap';
 import { buildCoolingFloor } from './rack/environment/CoolingFloor';
 import { buildHeatSim } from './rack/thermal/HeatSim';
@@ -47,19 +49,25 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     scene.environment = buildEnvMap(THREE, renderer);
     scene.fog = new THREE.FogExp2(0x16171b, 0.07);
     const rack = buildRack(THREE); rack.traverse((o: any) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); scene.add(rack);
+    // Two-row hot-aisle layout: nine baked replicas of this rack (four beside it facing front, five behind it
+    // turned 180° so the rows stand back-to-back). Built before the labels/doors are wired so the copies are clean.
+    scene.add(buildRackReplicas(THREE, rack));
     scene.add(buildEnvironment(THREE));
     scene.add(buildCoolingFloor(THREE));
     const heat = buildHeatSim(THREE, rack.userData.slots as Slot[]); scene.add(heat);
     const vapor = buildCoolingVapor(THREE); scene.add(vapor);
+    // Heat simulation + cold-air vapour for the nine other racks in the room — same intake/exhaust particle sim
+    // and floor grille as the interactive rack, instanced at each rack's placement.
+    const airflowReplicas = buildRackAirflowReplicas(THREE, rack.userData.slots as Slot[]); scene.add(airflowReplicas);
     const thermal = buildThermalView(THREE, scene, rack, rack.userData.slots as Slot[]);
-    // Liquid-cooling mode: overhead supply/return headers along the row, an end-of-row CDU, rack manifolds and
-    // per-server hoses with live coolant flow, driven by the hydraulic loop simulation (which shares the per-slot
-    // load temps with the thermal camera).
+    // Liquid-cooling mode: overhead supply/return headers along both rows, an end-of-row CDU per row, and rack
+    // manifolds + per-server hoses with live coolant flow on EVERY rack (not just this one), driven by the
+    // hydraulic loop simulation (which shares the per-slot load temps with the thermal camera).
     const liquid = buildLiquidLoop(THREE, rack.userData.slots as Slot[]); liquid.traverse((o: any) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); scene.add(liquid);
     const loopSim = createLiquidLoopSim(rack.userData.slots as Slot[], thermal.temps as number[]);
     liquid.userData.setTelemetry(loopSim.state().latest);
     const covers: THREE.Object3D[] = []; rack.traverse((o: any) => { if (/^bezel_/.test(o.name)) covers.push(o); });
-    camera.position.set(2.2, 1.5, -1.9); controls.target.set(0, 1.1, -0.3); controls.update();
+    camera.position.set(2.9, 1.9, 2.6); controls.target.set(0, 1.0, -0.2); controls.update(); // front three-quarter of row A, our rack centred
     const fit = () => { const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
     fit(); const ro = new ResizeObserver(fit); ro.observe(host);
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
@@ -118,7 +126,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     let raf = 0; const t0 = performance.now(); let lastT = 0;
     const loop = () => {
       const t = (performance.now() - t0) / 1000; const dt = Math.min(0.25, t - lastT); lastT = t;
-      heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
+      heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); airflowReplicas.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
       const loopState = loopSim.step(dt); liquid.userData.setTelemetry(loopState.latest); liquid.userData.tick(t, renderer.getPixelRatio());
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
@@ -136,15 +144,15 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setMode(mode: RackView) {
         apiRef.current.mode = mode;
         const air = mode === 'visual' && apiRef.current.airflow;
-        heat.visible = air; vapor.visible = air; liquid.visible = mode === 'liquid';
+        heat.visible = air; vapor.visible = air; airflowReplicas.userData.setAirVisible(air); liquid.visible = mode === 'liquid';
         renderer.toneMapping = mode === 'thermal' ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
         thermal.set(mode === 'thermal');
         const wasLiquid = liquidMode; liquidMode = mode === 'liquid'; updateDoorTargets();
         if (doors) doors.rd.visible = !liquidMode; // rear door removed for service in the liquid view (as in the reference rigs)
-        if (liquidMode && !wasLiquid) flyTo([-2.4, 2.5, -3.3], [0.7, 1.4, -0.3]); // rear-left three-quarter: manifolds, overhead headers, CDU at the row end
+        if (liquidMode && !wasLiquid) flyTo([4.4, 2.9, -1.9], [0.2, 1.3, -1.0]); // looking down the hot aisle from the CDU end: both rows' headers, our rack's manifolds
       },
       setCovers(on: boolean) { covers.forEach((m) => (m.visible = on)); },
-      setAirflow(on: boolean) { apiRef.current.airflow = on; const air = apiRef.current.mode === 'visual' && on; heat.visible = air; vapor.visible = air; },
+      setAirflow(on: boolean) { apiRef.current.airflow = on; const air = apiRef.current.mode === 'visual' && on; heat.visible = air; vapor.visible = air; airflowReplicas.userData.setAirVisible(air); },
       setTemps(a: number[]) { thermal.setTemps(a); loopSim.setLoad(a); },
       loopState() { return loopSim.state(); },
       /** Jump the camera (no animation) — used by tooling/screenshots; `flyTo` is the animated version. */

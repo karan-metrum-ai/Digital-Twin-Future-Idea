@@ -16,14 +16,11 @@ export function buildEnvironment(THREE) {
   const tileTex = new THREE.CanvasTexture(c); tileTex.colorSpace = THREE.SRGBColorSpace; tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping; tileTex.repeat.set(40, 40); tileTex.anisotropy = 8;
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(24, 24), new THREE.MeshStandardMaterial({ map: tileTex, roughness: 0.85, metalness: 0.08 }));
   floor.rotation.x = -Math.PI / 2; floor.position.set(0.3, -0.002, 0.3); floor.receiveShadow = true; e.add(floor);
-  const rackMat = new THREE.MeshStandardMaterial({ color: 0x1b1c1f, roughness: 0.6, metalness: 0.5 });
-  const glow = new THREE.MeshStandardMaterial({ color: 0x3a6fd8, emissive: 0x2a5fc8, emissiveIntensity: 0.6 });
-  const ghostRack = (x, z) => { const r = new THREE.Mesh(new THREE.BoxGeometry(0.6, 2.03, 1.07), rackMat); r.position.set(x, 1.015, z); e.add(r); for (let k = 0; k < 14; k++) { const s = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.003, 0.002), glow); s.position.set(x, 0.3 + k * 0.12, z + 0.536); e.add(s); } };
-  for (let i = -4; i <= 4; i++) ghostRack(i * 0.75, -3.6);
-  for (let i = -6; i <= 6; i++) if (i <= -3 || i >= 5) ghostRack(i * 0.75, 0);
+  // (Neighbour racks are real replicas of the procedural rack now — see RackRow.ts — so no dummy boxes here.)
+  // Overhead cable ladder: one run above each row's front and one above the hot aisle between the rows.
   const ladder = new THREE.MeshStandardMaterial({ color: 0x3a3c40, roughness: 0.6, metalness: 0.4 });
-  for (const z of [0.3, -0.35, -3.3]) { const l = new THREE.Mesh(new THREE.BoxGeometry(12, 0.03, 0.3), ladder); l.position.set(0, 2.75, z); e.add(l); }
+  for (const z of [0.3, -1.135, -2.57]) { const l = new THREE.Mesh(new THREE.BoxGeometry(6, 0.03, 0.3), ladder); l.position.set(0, 2.75, z); e.add(l); }
   const lamp = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xe8eefc, emissiveIntensity: 1.5 });
-  for (const z of [1.6, -1.8]) { const l = new THREE.Mesh(new THREE.BoxGeometry(6, 0.04, 0.12), lamp); l.position.set(0, 3.2, z); e.add(l); }
+  for (const z of [1.6, -1.135, -3.9]) { const l = new THREE.Mesh(new THREE.BoxGeometry(5, 0.04, 0.12), lamp); l.position.set(0, 3.2, z); e.add(l); }
   return e;
 }

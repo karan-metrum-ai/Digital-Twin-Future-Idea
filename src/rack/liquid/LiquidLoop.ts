@@ -1,26 +1,39 @@
 // @ts-nocheck
 /* eslint-disable */
-// Direct-to-chip liquid cooling hardware, modelled on the reference photos of a real DLC row:
-//   • overhead stainless supply + return headers running the length of the rack row, hung off unistrut from the
+// Direct-to-chip liquid cooling hardware, modelled on the reference photos of a real DLC row, wired to EVERY rack
+// in both rows:
+//   • overhead stainless supply + return headers running the length of each rack row, hung off unistrut from the
 //     ceiling ladder, with a valved (blue = supply, red = return) drop pipe into the top of every rack;
-//   • a rack-sized CDU (coolant distribution unit) standing at the end of the row, headers terminating into its
+//   • a rack-sized CDU (coolant distribution unit) standing at the end of each row, headers terminating into its
 //     top, facility (primary) water dropping out of its back into the raised floor;
-//   • inside our rack: two black-anodised rack manifolds mounted at the sides of the rear opening (supply left,
-//     return right), fed from the drops by a pair of large black EPDM hoses with stainless couplings coming in
-//     over the top; every server gets two black flexible hoses with stainless quick-disconnects, colour-coded by
-//     a blue/red collar at the manifold end, looped with realistic slack.
-// Coolant flow is visualised as soft particles — cool blue leaving the CDU along the supply header, down the
-// drop and manifold and into each branch; warm orange-red coming back up the return side to the CDU. Particle
-// speed follows the simulated flow rate, return brightness follows ΔT.
+//   • inside every rack: two black-anodised rack manifolds mounted at the sides of the rear opening (supply left,
+//     return right), fed from that rack's drop by a pair of large black EPDM hoses with stainless couplings
+//     coming in over the top; every server gets two black flexible hoses with stainless quick-disconnects,
+//     colour-coded by a blue/red collar at the manifold end, looped with realistic slack.
+// The row infrastructure (headers/hangers/drops/CDU) is built once per row through a placement transform, so row B
+// (rotated 180° behind the hot aisle — see environment/RackRow.ts) gets its own mirrored to its orientation.
 //
-// Kept outside the exploded-view item system (it is the infrastructure the items plug into); the branch hoses
-// hide as the stack pulls apart, the same way the cabling does.
+// Per-rack fixtures (manifolds + feed hoses + branch hoses/QDs) are built once, in "rack-local" coordinates
+// (the same coordinate frame the interactive rack — at the origin — already used). The interactive rack gets
+// that construction directly, unmerged, so its branch hoses can still hide individually in the exploded view.
+// The other nine racks get the SAME fixtures baked into a handful of merged-by-material meshes (mirroring the
+// technique RackRow.ts uses for the rack bodies) and cloned at each rack's placement — full per-server hose detail
+// without paying a per-mesh draw call for every neighbour rack.
+//
+// Coolant flow is visualised as soft particles — cool blue leaving the CDU along the supply header, down the
+// drop and manifold and into each branch; warm orange-red coming back up the return side to the CDU. The header
+// stream is one world-space particle system per row; the manifold/branch stream is built once in rack-local space
+// and rendered once per rack via 10 `Points` instances that all share the same (single, once-per-frame-updated)
+// geometry buffer — so animating every rack's coolant costs the same as animating one.
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { ROW_XS, ROW_B_Z, rackPlacement } from '../environment/RackRow';
 
 const SUP_X = -0.205, RET_X = 0.205, MAN_Z = -0.48;             // rack manifolds (rear opening, either side)
-const SUP_HDR_Y = 2.32, RET_HDR_Y = 2.50, SUP_HDR_Z = -0.38, RET_HDR_Z = -0.52; // overhead headers
-const HDR_X0 = -4.95;                                            // far end of the row
-const CDU_X = 3.0, CDU_W = 0.6, CDU_H = 2.0, CDU_D = 1.07;        // end-of-row CDU cabinet
-const ROW_RACKS = [0, -2.25, -3.0, -3.75, -4.5];                 // our rack + the ghost racks in the same row
+const SUP_HDR_Y = 2.32, RET_HDR_Y = 2.50, SUP_HDR_Z = -0.38, RET_HDR_Z = -0.52; // overhead headers (row-local)
+const ROW_END = Math.max(...ROW_XS) + 0.3;                       // outer face of the last rack in the row
+const HDR_X0 = -ROW_END - 0.25;                                  // far end of the headers
+const CDU_X = ROW_END + 0.30 + 0.30, CDU_W = 0.6, CDU_H = 2.0, CDU_D = 1.07; // end-of-row CDU, 0.3 m gap to the row
+const RACK_FLOW_N = 1800, HEADER_FLOW_N = 420;
 
 export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
   const g = new THREE.Group(); g.name = 'liquid_loop'; g.visible = false;
@@ -40,137 +53,196 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
     louvre: M({ color: 0x0e0f12, roughness: 0.8, metalness: 0.3 }),
     insulation: M({ color: 0x3a3c42, roughness: 0.95, metalness: 0.0 }),
   };
+  const ledOk = M({ color: 0x1ea85e, emissive: 0x1ea85e, emissiveIntensity: 2.2 });
+  const ledPump = M({ color: 0x3b8fe8, emissive: 0x3b8fe8, emissiveIntensity: 2.0 });
+  const ledWarn = M({ color: 0xf0a020, emissive: 0xf0a020, emissiveIntensity: 0.4 });
   const box = (name, mat, w, h, d, x, y, z, parent = g) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.name = name; m.position.set(x, y, z); parent.add(m); return m; };
   const cyl = (name, mat, r, h, x, y, z, axis, parent = g, seg = 20) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat); m.name = name; m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; parent.add(m); return m; };
   const tube = (name, mat, pts, r, parent = g, seg = 64, tension = 0.5) => { const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)), false, 'centripetal', tension); const m = new THREE.Mesh(new THREE.TubeGeometry(curve, seg, r, 14, false), mat); m.name = name; parent.add(m); return m; };
   const torus = (name, mat, r, tr, x, y, z, axis, parent = g) => { const m = new THREE.Mesh(new THREE.TorusGeometry(r, tr, 10, 28), mat); m.name = name; m.position.set(x, y, z); if (axis === 'y') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.y = Math.PI / 2; parent.add(m); return m; };
-  const flowPaths = [];
+  const headerFlowPaths = [];
+  const displays = [];
+  const HR = 0.048;                 // header radius
+  const DR = 0.018;                 // drop pipe radius
+  const dropTopY = TOP + 0.03;      // just above the rack top panel
+  const dropX = (rx, side) => rx + side * 0.10; // supply drop left of centre, return right (row-local)
+  const hdrX1 = CDU_X - CDU_W / 2 - 0.05;
 
-  /* ---------------- overhead headers + support frame ---------------- */
-  const hdrX1 = CDU_X - 0.05;
-  const HR = 0.048;
-  for (const [y, z, mat, name] of [[SUP_HDR_Y, SUP_HDR_Z, mats.stainless, 'supply_header'], [RET_HDR_Y, RET_HDR_Z, mats.stainless, 'return_header']]) {
-    cyl(name, mat, HR, hdrX1 - HDR_X0, (HDR_X0 + hdrX1) / 2, y, z, 'x', g, 28);
-    cyl(name + '_end_cap', mats.stainlessDull, HR + 0.006, 0.02, HDR_X0, y, z, 'x', g, 28);
-    for (let x = HDR_X0 + 0.9; x < hdrX1; x += 1.8) torus(name + '_flange', mats.stainlessDull, HR + 0.002, 0.012, x, y, z, 'x'); // weld/flange couplings
-    // elbow down into the CDU top
-    tube(name + '_cdu_elbow', mat, [[hdrX1 - 0.02, y, z], [hdrX1 + 0.08, y, z], [hdrX1 + 0.10, y - 0.06, z], [hdrX1 + 0.10, CDU_H + 0.02, z]], HR, g, 32);
-  }
-  // unistrut trapeze hangers off the ceiling ladder (which sits at y 2.75, z -0.35 in Environment.ts)
-  for (let x = HDR_X0 + 0.45; x < hdrX1; x += 1.5) {
-    for (const z of [SUP_HDR_Z - 0.13, RET_HDR_Z + 0.13]) box('header_hanger_rod', mats.strut, 0.014, 0.55, 0.014, x, 2.75 - 0.275, z);
-    box('header_trapeze', mats.strut, 0.04, 0.03, RET_HDR_Z - SUP_HDR_Z + 0.34, x, 2.22, (SUP_HDR_Z + RET_HDR_Z) / 2);
-    for (const [y, z] of [[SUP_HDR_Y, SUP_HDR_Z], [RET_HDR_Y, RET_HDR_Z]]) torus('pipe_clamp', mats.strut, HR + 0.006, 0.006, x, y, z, 'x');
-  }
+  /* ---------------- one row's infrastructure: headers, hangers, drops, CDU — through a placement transform ---------------- */
+  // `xf` maps row-local [x,y,z] → world; `rot` is the row's yaw (0 for row A, π for row B) for planar meshes.
+  const buildRow = (xf, rot) => {
+    const P = (x, y, z) => xf([x, y, z]);
+    const boxAt = (name, mat, w, h, d, x, y, z) => box(name, mat, w, h, d, ...P(x, y, z));
+    const cylAt = (name, mat, r, h, x, y, z, axis, seg) => cyl(name, mat, r, h, ...P(x, y, z), axis, g, seg);
+    const torusAt = (name, mat, r, tr, x, y, z, axis) => torus(name, mat, r, tr, ...P(x, y, z), axis);
+    const tubeAt = (name, mat, pts, r, seg) => tube(name, mat, pts.map((p) => xf(p)), r, g, seg);
 
-  /* ---------------- valved drop pipes into every rack in the row ---------------- */
-  const DR = 0.018; // drop pipe radius
-  const dropTopY = TOP + 0.03; // just above the rack top panel
-  const dropX = (rx, side) => rx + side * 0.10; // supply drop left of centre, return right
-  for (const rx of ROW_RACKS) {
-    for (const [side, hdrY, hdrZ, colMat, name] of [[-1, SUP_HDR_Y, SUP_HDR_Z, mats.blue, 'supply_drop'], [1, RET_HDR_Y, RET_HDR_Z, mats.red, 'return_drop']]) {
-      const x = dropX(rx, side);
-      cyl(name + '_tee', mats.stainlessDull, HR * 0.55, 0.06, x, hdrY - HR - 0.01, hdrZ, 'y', g, 20);
-      cyl(name, mats.stainless, DR, hdrY - dropTopY, x, (hdrY + dropTopY) / 2, hdrZ, 'y', g, 18);
-      // ball valve with colour-coded lever handle + tag
-      const vy = hdrY - 0.16;
-      cyl(name + '_valve_body', mats.stainlessDull, DR * 1.7, 0.06, x, vy, hdrZ, 'y', g, 16);
-      cyl(name + '_valve_stem', mats.stainlessDull, 0.005, 0.03, x + DR * 1.7 + 0.01, vy, hdrZ, 'x', g, 8);
-      box(name + '_valve_handle', colMat, 0.012, 0.014, 0.075, x + DR * 1.7 + 0.03, vy, hdrZ - 0.02);
-      box(name + '_tag', mats.yellow, 0.002, 0.03, 0.045, x - DR - 0.004, vy - 0.06, hdrZ);
-      // union coupling where the drop meets the rack's hose
-      cyl(name + '_union', mats.stainlessDull, DR * 1.5, 0.035, x, dropTopY + 0.02, hdrZ, 'y', g, 16);
-      torus(name + '_union_ring', colMat, DR * 1.5 + 0.002, 0.004, x, dropTopY + 0.045, hdrZ, 'y');
+    for (const [y, z, name] of [[SUP_HDR_Y, SUP_HDR_Z, 'supply_header'], [RET_HDR_Y, RET_HDR_Z, 'return_header']]) {
+      cylAt(name, mats.stainless, HR, hdrX1 - HDR_X0, (HDR_X0 + hdrX1) / 2, y, z, 'x', 28);
+      cylAt(name + '_end_cap', mats.stainlessDull, HR + 0.006, 0.02, HDR_X0, y, z, 'x', 28);
+      for (let x = HDR_X0 + 0.9; x < hdrX1; x += 1.8) torusAt(name + '_flange', mats.stainlessDull, HR + 0.002, 0.012, x, y, z, 'x');
+      tubeAt(name + '_cdu_elbow', mats.stainless, [[hdrX1 - 0.02, y, z], [hdrX1 + 0.08, y, z], [hdrX1 + 0.10, y - 0.06, z], [hdrX1 + 0.10, CDU_H + 0.02, z]], HR, 32);
     }
-  }
+    // unistrut trapeze hangers off the ceiling ladder (y 2.75)
+    for (let x = HDR_X0 + 0.45; x < hdrX1; x += 1.5) {
+      for (const z of [SUP_HDR_Z - 0.13, RET_HDR_Z + 0.13]) boxAt('header_hanger_rod', mats.strut, 0.014, 0.55, 0.014, x, 2.75 - 0.275, z);
+      boxAt('header_trapeze', mats.strut, 0.04, 0.03, RET_HDR_Z - SUP_HDR_Z + 0.34, x, 2.22, (SUP_HDR_Z + RET_HDR_Z) / 2);
+      for (const [y, z] of [[SUP_HDR_Y, SUP_HDR_Z], [RET_HDR_Y, RET_HDR_Z]]) torusAt('pipe_clamp', mats.strut, HR + 0.006, 0.006, x, y, z, 'x');
+    }
+    // valved drop pipes into every rack in the row
+    for (const rx of ROW_XS) {
+      for (const [side, hdrY, hdrZ, colMat, name] of [[-1, SUP_HDR_Y, SUP_HDR_Z, mats.blue, 'supply_drop'], [1, RET_HDR_Y, RET_HDR_Z, mats.red, 'return_drop']]) {
+        const x = dropX(rx, side);
+        cylAt(name + '_tee', mats.stainlessDull, HR * 0.55, 0.06, x, hdrY - HR - 0.01, hdrZ, 'y', 20);
+        cylAt(name, mats.stainless, DR, hdrY - dropTopY, x, (hdrY + dropTopY) / 2, hdrZ, 'y', 18);
+        const vy = hdrY - 0.16;
+        cylAt(name + '_valve_body', mats.stainlessDull, DR * 1.7, 0.06, x, vy, hdrZ, 'y', 16);
+        cylAt(name + '_valve_stem', mats.stainlessDull, 0.005, 0.03, x + DR * 1.7 + 0.01, vy, hdrZ, 'x', 8);
+        boxAt(name + '_valve_handle', colMat, 0.012, 0.014, 0.075, x + DR * 1.7 + 0.03, vy, hdrZ - 0.02);
+        boxAt(name + '_tag', mats.yellow, 0.002, 0.03, 0.045, x - DR - 0.004, vy - 0.06, hdrZ);
+        cylAt(name + '_union', mats.stainlessDull, DR * 1.5, 0.035, x, dropTopY + 0.02, hdrZ, 'y', 16);
+        torusAt(name + '_union_ring', colMat, DR * 1.5 + 0.002, 0.004, x, dropTopY + 0.045, hdrZ, 'y');
+      }
+    }
+    // end-of-row CDU cabinet
+    boxAt('cdu_body', mats.cabinet, CDU_W, CDU_H, CDU_D, CDU_X, CDU_H / 2, 0);
+    boxAt('cdu_top_cap', mats.cabinetTrim, CDU_W + 0.01, 0.02, CDU_D + 0.01, CDU_X, CDU_H + 0.01, 0);
+    boxAt('cdu_plinth', mats.louvre, CDU_W - 0.02, 0.06, CDU_D - 0.02, CDU_X, 0.03, 0);
+    const fz = CDU_D / 2 + 0.001; // row-local front face (+z); xf flips it for row B
+    boxAt('cdu_front_door', mats.cabinetTrim, CDU_W - 0.03, CDU_H - 0.12, 0.006, CDU_X, CDU_H / 2 + 0.02, fz);
+    for (let k = 0; k < 22; k++) boxAt('cdu_louvre', mats.louvre, CDU_W - 0.10, 0.010, 0.004, CDU_X, 0.20 + k * 0.03, fz + 0.005);
+    const disp = makeDisplay(THREE); disp.mesh.position.set(...P(CDU_X, CDU_H - 0.32, fz + 0.006)); disp.mesh.rotation.y = rot; g.add(disp.mesh); displays.push(disp);
+    boxAt('cdu_display_bezel', mats.louvre, 0.30, 0.15, 0.004, CDU_X, CDU_H - 0.32, fz + 0.004);
+    for (const [dx, mat] of [[-0.09, ledOk], [-0.03, ledPump], [0.03, ledPump], [0.09, ledWarn]]) cylAt('cdu_status_led', mat, 0.005, 0.003, CDU_X + dx, CDU_H - 0.46, fz + 0.008, 'z', 10);
+    boxAt('cdu_handle', mats.stainlessDull, 0.014, 0.22, 0.014, CDU_X + CDU_W / 2 - 0.05, CDU_H / 2 - 0.1, fz + 0.012);
+    for (const z of [SUP_HDR_Z, RET_HDR_Z]) cylAt('cdu_top_flange', mats.stainlessDull, HR + 0.012, 0.02, hdrX1 + 0.10, CDU_H + 0.03, z, 'y', 24);
+    for (const [x, mat] of [[CDU_X - 0.14, mats.blue], [CDU_X + 0.14, mats.red]]) {
+      tubeAt('facility_pipe', mats.insulation, [[x, 0.30, -CDU_D / 2 + 0.02], [x, 0.30, -CDU_D / 2 - 0.16], [x, 0.0, -CDU_D / 2 - 0.16]], 0.034, 24);
+      torusAt('facility_id_band', mat, 0.036, 0.005, x, 0.14, -CDU_D / 2 - 0.16, 'y');
+      cylAt('facility_flange', mats.stainlessDull, 0.046, 0.012, x, 0.006, -CDU_D / 2 - 0.16, 'y', 16);
+    }
+    const badge = makeBadge(THREE); badge.position.set(...P(CDU_X - CDU_W / 2 - 0.001, 1.15, 0)); badge.rotation.y = -Math.PI / 2 + rot; g.add(badge);
+    // header flow paths (supply out to the far end, return back to the CDU) — world-space, one pair per row
+    headerFlowPaths.push(
+      { pts: [[hdrX1 + 0.10, CDU_H + 0.02, SUP_HDR_Z], [hdrX1 + 0.08, SUP_HDR_Y, SUP_HDR_Z], [HDR_X0 + 0.02, SUP_HDR_Y, SUP_HDR_Z]].map(xf), kind: 0, weight: 4 },
+      { pts: [[HDR_X0 + 0.02, RET_HDR_Y, RET_HDR_Z], [hdrX1 + 0.08, RET_HDR_Y, RET_HDR_Z], [hdrX1 + 0.10, CDU_H + 0.02, RET_HDR_Z]].map(xf), kind: 1, weight: 4 },
+    );
+  };
+  buildRow((p) => p, 0);                                                   // row A (our rack's row), world == local
+  buildRow(([x, y, z]) => [-x, y, -z + ROW_B_Z], Math.PI);                 // row B, rotated 180° behind the hot aisle
 
-  /* ---------------- our rack: manifolds + top feed hoses ---------------- */
+  /* ---------------- per-rack fixtures: manifolds, top feed hoses, branch hoses w/ QDs ----------------
+     Built once in rack-local coordinates (rack assumed at the origin, front at +z) — every rack in the room uses
+     an identical 42U layout, so one construction serves all ten via `parent` and, for replicas, a bake+clone. */
   const manTop = TOP - 0.07, manBot = 0.24;
-  for (const [x, colMat, name] of [[SUP_X, mats.blue, 'supply_manifold'], [RET_X, mats.red, 'return_manifold']]) {
-    box(name, mats.manifold, 0.042, manTop - manBot, 0.052, x, (manTop + manBot) / 2, MAN_Z);
-    box(name + '_id_band', colMat, 0.044, 0.05, 0.054, x, manTop - 0.06, MAN_Z);
-    box(name + '_id_band', colMat, 0.044, 0.03, 0.054, x, manBot + 0.05, MAN_Z);
-    cyl(name + '_top_port', mats.stainless, 0.02, 0.05, x, manTop + 0.025, MAN_Z, 'y', g, 16);
-    cyl(name + '_top_coupling', mats.stainlessDull, 0.028, 0.04, x, manTop + 0.06, MAN_Z, 'y', g, 16);
-    cyl(name + '_drain', mats.stainlessDull, 0.008, 0.03, x, manBot - 0.015, MAN_Z, 'y', g, 10);
-    for (const y of [0.5, 1.1, 1.7]) { box(name + '_bracket', mats.strut, 0.06, 0.02, 0.01, x + (x < 0 ? -0.02 : 0.02), y, MAN_Z - 0.031); }
-    // pressure/temperature sensor pocket
-    cyl(name + '_sensor', mats.stainlessDull, 0.007, 0.03, x, manTop - 0.16, MAN_Z + 0.035, 'z', g, 10);
-  }
-  // big black feed hoses from the drop unions over the top of the rack down onto the manifold couplings
-  const supFeed = [[dropX(0, -1), dropTopY + 0.06, SUP_HDR_Z], [dropX(0, -1) - 0.02, dropTopY + 0.16, SUP_HDR_Z - 0.06], [SUP_X - 0.03, TOP + 0.12, MAN_Z - 0.10], [SUP_X, manTop + 0.09, MAN_Z]];
-  const retFeed = [[RET_X, manTop + 0.09, MAN_Z], [RET_X + 0.03, TOP + 0.13, MAN_Z - 0.10], [dropX(0, 1) + 0.02, dropTopY + 0.17, RET_HDR_Z - 0.05], [dropX(0, 1), dropTopY + 0.06, RET_HDR_Z]];
-  tube('supply_feed_hose', mats.hoseBig, supFeed, 0.022, g, 40);
-  tube('return_feed_hose', mats.hoseBig, retFeed, 0.022, g, 40);
-  for (const p of [supFeed[0], supFeed[3], retFeed[0], retFeed[3]]) cyl('feed_hose_ferrule', mats.stainless, 0.026, 0.05, p[0], p[1], p[2], 'y', g, 16);
-  flowPaths.push(
-    { pts: [[hdrX1 + 0.10, CDU_H + 0.02, SUP_HDR_Z], [hdrX1 + 0.08, SUP_HDR_Y, SUP_HDR_Z], [HDR_X0 + 0.02, SUP_HDR_Y, SUP_HDR_Z]], kind: 0, weight: 4 },
-    { pts: [[dropX(0, -1), SUP_HDR_Y, SUP_HDR_Z], [dropX(0, -1), dropTopY + 0.06, SUP_HDR_Z], ...supFeed.slice(1), [SUP_X, manTop, MAN_Z], [SUP_X, manBot, MAN_Z]], kind: 0, weight: 3 },
-    { pts: [[RET_X, manBot, MAN_Z], [RET_X, manTop, MAN_Z], ...retFeed, [dropX(0, 1), RET_HDR_Y, RET_HDR_Z]], kind: 1, weight: 3 },
-    { pts: [[HDR_X0 + 0.02, RET_HDR_Y, RET_HDR_Z], [hdrX1 + 0.08, RET_HDR_Y, RET_HDR_Z], [hdrX1 + 0.10, CDU_H + 0.02, RET_HDR_Z]], kind: 1, weight: 4 },
-  );
-
-  /* ---------------- per-server branch hoses with quick-disconnects ---------------- */
-  const hoses = new THREE.Group(); hoses.name = 'branch_hoses'; g.add(hoses);
-  slots.forEach((s, i) => {
-    const y = s.y, zr = s.zr - 0.014, slackZ = -0.06 - (i % 4) * 0.012, dip = -0.03 - (i % 3) * 0.012;
-    for (const [side, colMat] of [[-1, mats.blue], [1, mats.red]]) {
-      const mx = side < 0 ? SUP_X : RET_X, portX = mx - side * 0.026, srvX = side * 0.07;
-      // hose: leaves the manifold port sideways, loops back/down with slack, comes into the server rear
-      const pts = [[portX, y, MAN_Z], [portX - side * 0.05, y + dip * 0.6, MAN_Z + slackZ], [(portX + srvX) / 2, y + dip, MAN_Z + slackZ * 0.5], [srvX, y + dip * 0.15, zr - 0.05], [srvX, y, zr]];
-      tube('branch_hose', mats.hose, pts, 0.0065, hoses, 28, 0.35);
-      // manifold quick-disconnect: stainless body + colour collar, on a short spigot
-      cyl('manifold_spigot', mats.stainlessDull, 0.007, 0.02, mx - side * 0.02, y, MAN_Z, 'x', hoses, 10);
-      cyl('manifold_qd', mats.stainless, 0.0105, 0.03, portX, y, MAN_Z, 'x', hoses, 14);
-      cyl('qd_collar', colMat, 0.0115, 0.009, portX - side * 0.012, y, MAN_Z, 'x', hoses, 14);
-      // server-side quick-disconnect
-      cyl('server_qd', mats.stainless, 0.0095, 0.03, srvX, y, zr - 0.006, 'z', hoses, 12);
-      cyl('server_qd_collar', mats.stainlessDull, 0.0112, 0.008, srvX, y, zr - 0.02, 'z', hoses, 12);
-      flowPaths.push({ pts: side < 0 ? pts : pts.slice().reverse(), kind: side < 0 ? 0 : 1, weight: 1 });
+  const buildRackFixtures = (parent) => {
+    const localFlowPaths = [];
+    for (const [x, colMat, name] of [[SUP_X, mats.blue, 'supply_manifold'], [RET_X, mats.red, 'return_manifold']]) {
+      box(name, mats.manifold, 0.042, manTop - manBot, 0.052, x, (manTop + manBot) / 2, MAN_Z, parent);
+      box(name + '_id_band', colMat, 0.044, 0.05, 0.054, x, manTop - 0.06, MAN_Z, parent);
+      box(name + '_id_band', colMat, 0.044, 0.03, 0.054, x, manBot + 0.05, MAN_Z, parent);
+      cyl(name + '_top_port', mats.stainless, 0.02, 0.05, x, manTop + 0.025, MAN_Z, 'y', parent, 16);
+      cyl(name + '_top_coupling', mats.stainlessDull, 0.028, 0.04, x, manTop + 0.06, MAN_Z, 'y', parent, 16);
+      cyl(name + '_drain', mats.stainlessDull, 0.008, 0.03, x, manBot - 0.015, MAN_Z, 'y', parent, 10);
+      for (const y of [0.5, 1.1, 1.7]) box(name + '_bracket', mats.strut, 0.06, 0.02, 0.01, x + (x < 0 ? -0.02 : 0.02), y, MAN_Z - 0.031, parent);
+      cyl(name + '_sensor', mats.stainlessDull, 0.007, 0.03, x, manTop - 0.16, MAN_Z + 0.035, 'z', parent, 10);
     }
-  });
+    // big black feed hoses from the drop union over the top of the rack down onto the manifold couplings
+    const supFeed = [[dropX(0, -1), dropTopY + 0.06, SUP_HDR_Z], [dropX(0, -1) - 0.02, dropTopY + 0.16, SUP_HDR_Z - 0.06], [SUP_X - 0.03, TOP + 0.12, MAN_Z - 0.10], [SUP_X, manTop + 0.09, MAN_Z]];
+    const retFeed = [[RET_X, manTop + 0.09, MAN_Z], [RET_X + 0.03, TOP + 0.13, MAN_Z - 0.10], [dropX(0, 1) + 0.02, dropTopY + 0.17, RET_HDR_Z - 0.05], [dropX(0, 1), dropTopY + 0.06, RET_HDR_Z]];
+    tube('supply_feed_hose', mats.hoseBig, supFeed, 0.022, parent, 40);
+    tube('return_feed_hose', mats.hoseBig, retFeed, 0.022, parent, 40);
+    for (const p of [supFeed[0], supFeed[3], retFeed[0], retFeed[3]]) cyl('feed_hose_ferrule', mats.stainless, 0.026, 0.05, p[0], p[1], p[2], 'y', parent, 16);
+    localFlowPaths.push(
+      { pts: [[dropX(0, -1), SUP_HDR_Y, SUP_HDR_Z], [dropX(0, -1), dropTopY + 0.06, SUP_HDR_Z], ...supFeed.slice(1), [SUP_X, manTop, MAN_Z], [SUP_X, manBot, MAN_Z]], kind: 0, weight: 3 },
+      { pts: [[RET_X, manBot, MAN_Z], [RET_X, manTop, MAN_Z], ...retFeed, [dropX(0, 1), RET_HDR_Y, RET_HDR_Z]], kind: 1, weight: 3 },
+    );
+    // per-server branch hoses with quick-disconnects
+    const hoses = new THREE.Group(); hoses.name = 'branch_hoses'; parent.add(hoses);
+    slots.forEach((s, i) => {
+      const y = s.y, zr = s.zr - 0.014, slackZ = -0.06 - (i % 4) * 0.012, dip = -0.03 - (i % 3) * 0.012;
+      for (const [side, colMat] of [[-1, mats.blue], [1, mats.red]]) {
+        const mx = side < 0 ? SUP_X : RET_X, portX = mx - side * 0.026, srvX = side * 0.07;
+        const pts = [[portX, y, MAN_Z], [portX - side * 0.05, y + dip * 0.6, MAN_Z + slackZ], [(portX + srvX) / 2, y + dip, MAN_Z + slackZ * 0.5], [srvX, y + dip * 0.15, zr - 0.05], [srvX, y, zr]];
+        tube('branch_hose', mats.hose, pts, 0.0065, hoses, 28, 0.35);
+        cyl('manifold_spigot', mats.stainlessDull, 0.007, 0.02, mx - side * 0.02, y, MAN_Z, 'x', hoses, 10);
+        cyl('manifold_qd', mats.stainless, 0.0105, 0.03, portX, y, MAN_Z, 'x', hoses, 14);
+        cyl('qd_collar', colMat, 0.0115, 0.009, portX - side * 0.012, y, MAN_Z, 'x', hoses, 14);
+        cyl('server_qd', mats.stainless, 0.0095, 0.03, srvX, y, zr - 0.006, 'z', hoses, 12);
+        cyl('server_qd_collar', mats.stainlessDull, 0.0112, 0.008, srvX, y, zr - 0.02, 'z', hoses, 12);
+        localFlowPaths.push({ pts: side < 0 ? pts : pts.slice().reverse(), kind: side < 0 ? 0 : 1, weight: 1 });
+      }
+    });
+    return { hoses, localFlowPaths };
+  };
 
-  /* ---------------- end-of-row CDU cabinet ---------------- */
-  const cdu = new THREE.Group(); cdu.name = 'cdu_cabinet'; g.add(cdu);
-  box('cdu_body', mats.cabinet, CDU_W, CDU_H, CDU_D, CDU_X, CDU_H / 2, 0, cdu);
-  box('cdu_top_cap', mats.cabinetTrim, CDU_W + 0.01, 0.02, CDU_D + 0.01, CDU_X, CDU_H + 0.01, 0, cdu);
-  box('cdu_plinth', mats.louvre, CDU_W - 0.02, 0.06, CDU_D - 0.02, CDU_X, 0.03, 0, cdu);
-  const fz = CDU_D / 2 + 0.001;
-  box('cdu_front_door', mats.cabinetTrim, CDU_W - 0.03, CDU_H - 0.12, 0.006, CDU_X, CDU_H / 2 + 0.02, fz, cdu);
-  for (let k = 0; k < 22; k++) box('cdu_louvre', mats.louvre, CDU_W - 0.10, 0.010, 0.004, CDU_X, 0.20 + k * 0.03, fz + 0.005, cdu);
-  const disp = makeDisplay(THREE); disp.mesh.position.set(CDU_X, CDU_H - 0.32, fz + 0.006); cdu.add(disp.mesh);
-  box('cdu_display_bezel', mats.louvre, 0.30, 0.15, 0.004, CDU_X, CDU_H - 0.32, fz + 0.004, cdu);
-  const ledOk = M({ color: 0x1ea85e, emissive: 0x1ea85e, emissiveIntensity: 2.2 });
-  const ledPump = M({ color: 0x3b8fe8, emissive: 0x3b8fe8, emissiveIntensity: 2.0 });
-  const ledWarn = M({ color: 0xf0a020, emissive: 0xf0a020, emissiveIntensity: 0.4 });
-  for (const [dx, mat] of [[-0.09, ledOk], [-0.03, ledPump], [0.03, ledPump], [0.09, ledWarn]]) cyl('cdu_status_led', mat, 0.005, 0.003, CDU_X + dx, CDU_H - 0.46, fz + 0.008, 'z', cdu, 10);
-  box('cdu_handle', mats.stainlessDull, 0.014, 0.22, 0.014, CDU_X + CDU_W / 2 - 0.05, CDU_H / 2 - 0.1, fz + 0.012, cdu);
-  // top connections: header elbows land on two stub flanges
-  for (const z of [SUP_HDR_Z, RET_HDR_Z]) cyl('cdu_top_flange', mats.stainlessDull, HR + 0.012, 0.02, hdrX1 + 0.10, CDU_H + 0.03, z, 'y', cdu, 24);
-  // facility (primary) water tie-in: two insulated pipes out of the rear-bottom into the raised floor
-  for (const [x, mat] of [[CDU_X - 0.14, mats.blue], [CDU_X + 0.14, mats.red]]) {
-    tube('facility_pipe', mats.insulation, [[x, 0.30, -CDU_D / 2 + 0.02], [x, 0.30, -CDU_D / 2 - 0.16], [x, 0.0, -CDU_D / 2 - 0.16]], 0.034, cdu, 24);
-    torus('facility_id_band', mat, 0.036, 0.005, x, 0.14, -CDU_D / 2 - 0.16, 'y', cdu);
-    cyl('facility_flange', mats.stainlessDull, 0.046, 0.012, x, 0.006, -CDU_D / 2 - 0.16, 'y', cdu, 16);
+  // Interactive rack (row A, x=0): built directly into `g`, unmerged, so `hoses` can still hide per-mesh in the
+  // exploded view — identical to how this was built before the row was extended to every rack.
+  const { hoses, localFlowPaths } = buildRackFixtures(g);
+
+  // The other nine racks: same construction, built into a scratch group, then baked (matrix applied into the
+  // geometry) and merged per material into a handful of meshes, cloned at each rack's placement. Full per-server
+  // hose detail on every neighbour rack without a per-mesh draw call for each of them.
+  const scratch = new THREE.Group();
+  buildRackFixtures(scratch);
+  const buckets = new Map();
+  scratch.traverse((o) => {
+    if (!o.isMesh) return;
+    o.updateMatrix();
+    const geo = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    geo.applyMatrix4(o.matrix);
+    const key = o.material.uuid;
+    if (!buckets.has(key)) buckets.set(key, { mat: o.material, geos: [] });
+    buckets.get(key).geos.push(geo);
+  });
+  const bakedFixtures = [];
+  for (const { mat, geos } of buckets.values()) {
+    const merged = mergeGeometries(geos, false); geos.forEach((geo) => geo.dispose());
+    if (!merged) continue;
+    const m = new THREE.Mesh(merged, mat); m.name = 'rack_liquid_fixture_baked'; m.castShadow = true; m.receiveShadow = true;
+    bakedFixtures.push(m);
   }
-  const badge = makeBadge(THREE); badge.position.set(CDU_X - CDU_W / 2 - 0.001, 1.15, 0); badge.rotation.y = -Math.PI / 2; cdu.add(badge);
+  for (const row of ['A', 'B']) for (let i = 0; i < ROW_XS.length; i++) {
+    if (row === 'A' && ROW_XS[i] === 0) continue; // interactive rack, built above
+    const { x, z, rotY } = rackPlacement(row, i);
+    const wrap = new THREE.Group(); wrap.name = `rack_liquid_fixtures_${row}${i}`; wrap.position.set(x, 0, z); wrap.rotation.y = rotY;
+    bakedFixtures.forEach((m) => wrap.add(m.clone()));
+    g.add(wrap);
+  }
 
   /* ---------------- coolant flow particles ---------------- */
-  const paths = flowPaths.map((p) => {
-    const v = p.pts.map((q) => new THREE.Vector3(...q)); const seg = []; let len = 0;
-    for (let i = 1; i < v.length; i++) { const l = v[i - 1].distanceTo(v[i]); seg.push({ a: v[i - 1], b: v[i], l0: len, l }); len += l; }
-    return { ...p, seg, len };
-  });
-  const totalW = paths.reduce((s, p) => s + p.weight * Math.max(p.len, 0.15), 0);
-  const N = 2200;
-  const pathId = new Int16Array(N), phase = new Float32Array(N), jit = new Float32Array(N * 2);
-  let s = 3; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
-  { let i = 0; for (let p = 0; p < paths.length && i < N; p++) { const n = Math.max(2, Math.round((N * paths[p].weight * Math.max(paths[p].len, 0.15)) / totalW)); for (let k = 0; k < n && i < N; k++, i++) { pathId[i] = p; phase[i] = rnd(); jit[i * 2] = (rnd() - 0.5) * 0.012; jit[i * 2 + 1] = (rnd() - 0.5) * 0.012; } } for (; i < N; i++) { pathId[i] = 0; phase[i] = rnd(); } }
-  const pos = new Float32Array(N * 3), kindAttr = new Float32Array(N);
-  for (let i = 0; i < N; i++) kindAttr[i] = paths[pathId[i]].kind;
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aKind', new THREE.BufferAttribute(kindAttr, 1));
+  const buildFlowSystem = (pathDefs, N) => {
+    const paths = pathDefs.map((p) => {
+      const v = p.pts.map((q) => new THREE.Vector3(...q)); const seg = []; let len = 0;
+      for (let i = 1; i < v.length; i++) { const l = v[i - 1].distanceTo(v[i]); seg.push({ a: v[i - 1], b: v[i], l0: len, l }); len += l; }
+      return { ...p, seg, len };
+    });
+    const totalW = paths.reduce((s, p) => s + p.weight * Math.max(p.len, 0.15), 0) || 1;
+    const pathId = new Int16Array(N), phase = new Float32Array(N), jit = new Float32Array(N * 2);
+    let s = 3; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    { let i = 0; for (let p = 0; p < paths.length && i < N; p++) { const n = Math.max(2, Math.round((N * paths[p].weight * Math.max(paths[p].len, 0.15)) / totalW)); for (let k = 0; k < n && i < N; k++, i++) { pathId[i] = p; phase[i] = rnd(); jit[i * 2] = (rnd() - 0.5) * 0.012; jit[i * 2 + 1] = (rnd() - 0.5) * 0.012; } } for (; i < N; i++) { pathId[i] = 0; phase[i] = rnd(); } }
+    const pos = new Float32Array(N * 3), kindAttr = new Float32Array(N);
+    for (let i = 0; i < N; i++) kindAttr[i] = paths[pathId[i]] ? paths[pathId[i]].kind : 0;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('aKind', new THREE.BufferAttribute(kindAttr, 1));
+    const tmp = new THREE.Vector3();
+    const place = (i) => {
+      const p = paths[pathId[i]]; if (!p || !p.seg.length) return;
+      const d = phase[i] * p.len; let sg = p.seg[p.seg.length - 1];
+      for (const q of p.seg) if (d <= q.l0 + q.l) { sg = q; break; }
+      tmp.lerpVectors(sg.a, sg.b, sg.l ? Math.min(1, Math.max(0, (d - sg.l0) / sg.l)) : 0);
+      pos[i * 3] = tmp.x + jit[i * 2]; pos[i * 3 + 1] = tmp.y; pos[i * 3 + 2] = tmp.z + jit[i * 2 + 1];
+    };
+    for (let i = 0; i < N; i++) place(i);
+    return { geo, paths, pathId, phase, jit, place, N };
+  };
+  // `rackFlow` is built once, in rack-local space, from the SAME branch/manifold paths used for the interactive
+  // rack; every rack (including the interactive one) gets its own `Points` instance sharing that one geometry
+  // buffer, positioned via the same row/placement transform as the rack bodies — so animating coolant in all ten
+  // racks costs exactly what animating one did.
+  const rackFlowSys = buildFlowSystem(localFlowPaths, RACK_FLOW_N);
+  const headerFlowSys = buildFlowSystem(headerFlowPaths, HEADER_FLOW_N);
   const flowMat = new THREE.ShaderMaterial({
     uniforms: { uPixelRatio: { value: 1 }, uWarm: { value: 0.5 }, uFlow: { value: 1 } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -183,29 +255,29 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
         vec3 cool = vec3(0.30, 0.65, 1.0); vec3 warm = mix(vec3(1.0, 0.62, 0.30), vec3(1.0, 0.30, 0.12), uWarm);
         gl_FragColor = vec4(mix(cool, warm, vKind), soft * 0.85); }`,
   });
-  const pts = new THREE.Points(geo, flowMat); pts.name = 'coolant_flow'; pts.frustumCulled = false; pts.userData.thermalSkip = true; g.add(pts);
-  const tmp = new THREE.Vector3();
-  const place = (i) => {
-    const p = paths[pathId[i]]; const d = phase[i] * p.len; let sg = p.seg[p.seg.length - 1];
-    for (const q of p.seg) if (d <= q.l0 + q.l) { sg = q; break; }
-    tmp.lerpVectors(sg.a, sg.b, sg.l ? Math.min(1, Math.max(0, (d - sg.l0) / sg.l)) : 0);
-    pos[i * 3] = tmp.x + jit[i * 2]; pos[i * 3 + 1] = tmp.y; pos[i * 3 + 2] = tmp.z + jit[i * 2 + 1];
-  };
-  for (let i = 0; i < N; i++) place(i);
+  for (const row of ['A', 'B']) for (let i = 0; i < ROW_XS.length; i++) {
+    const { x, z, rotY } = rackPlacement(row, i);
+    const wrap = new THREE.Group(); wrap.name = `rack_flow_${row}${i}`; wrap.position.set(x, 0, z); wrap.rotation.y = rotY;
+    const p = new THREE.Points(rackFlowSys.geo, flowMat); p.name = 'coolant_flow_branch'; p.frustumCulled = false; p.userData.thermalSkip = true;
+    wrap.add(p); g.add(wrap);
+  }
+  const headerPts = new THREE.Points(headerFlowSys.geo, flowMat); headerPts.name = 'coolant_flow_header'; headerPts.frustumCulled = false; headerPts.userData.thermalSkip = true; g.add(headerPts);
 
   let lastT = 0, flowLpm = 60, dT = 10, dispAt = -1;
   g.userData.tick = (t, pr) => {
     const dt = Math.min(0.1, Math.max(0, t - lastT)); lastT = t;
     if (!g.visible) return;
     const v = 0.25 + (flowLpm / 60) * 0.40; // m/s along the loop
-    for (let i = 0; i < N; i++) { const p = paths[pathId[i]]; phase[i] += (v * dt) / Math.max(p.len, 0.05); if (phase[i] >= 1) phase[i] -= 1; place(i); }
-    geo.attributes.position.needsUpdate = true;
+    for (const sys of [rackFlowSys, headerFlowSys]) {
+      for (let i = 0; i < sys.N; i++) { const p = sys.paths[sys.pathId[i]]; if (!p) continue; sys.phase[i] += (v * dt) / Math.max(p.len, 0.05); if (sys.phase[i] >= 1) sys.phase[i] -= 1; sys.place(i); }
+      sys.geo.attributes.position.needsUpdate = true;
+    }
     flowMat.uniforms.uPixelRatio.value = pr; flowMat.uniforms.uFlow.value = Math.min(2, flowLpm / 60); flowMat.uniforms.uWarm.value = Math.min(1, Math.max(0, (dT - 6) / 10));
     ledPump.emissiveIntensity = 1.4 + 0.8 * Math.sin(t * 6.0);
-    if (t - dispAt > 1) { dispAt = t; disp.draw(g.userData.sample); }
+    if (t - dispAt > 1) { dispAt = t; displays.forEach((d) => d.draw(g.userData.sample)); }
   };
   g.userData.setTelemetry = (sample) => { g.userData.sample = sample; flowLpm = sample.flowLpm; dT = sample.dT; ledWarn.emissiveIntensity = sample.vibMmS > 2.8 ? 2.0 : 0.35; };
-  g.userData.setExploded = (t) => { hoses.visible = t < 0.04; };
+  g.userData.setExploded = (t) => { hoses.visible = t < 0.04; }; // only the interactive rack's hoses hide — replicas never explode
   return g;
 }
 
