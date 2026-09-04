@@ -125,10 +125,12 @@ export function createTextures(THREE, U, CW) {
     ctx.fillStyle = '#3a3d43'; ctx.fillRect(0, 0.036, CW, 0.0045);
   });
   T.pdu = tex('vertical_pdu_face', 128, 2048, (ctx, w, h) => {
-    mspace(ctx, w, h, 0.045, 1.62); ctx.fillStyle = '#1b1c1f'; ctx.fillRect(0, 0, 0.045, 1.62);
-    for (let k = 0; k < 30; k++) { const y = 1.62 - (0.18 + k * 0.045), big = k > 12 && k < 17, oh = big ? 0.026 : 0.02, ow = big ? 0.032 : 0.026; ctx.fillStyle = '#0c0d0f'; ctx.fillRect(0.0225 - ow / 2, y - oh / 2, ow, oh); ctx.fillStyle = '#3a3d42'; ctx.fillRect(0.0225 - ow * 0.28, y - oh * 0.28, 0.003, 0.006); ctx.fillRect(0.0225 + ow * 0.28 - 0.003, y - oh * 0.28, 0.003, 0.006); ctx.fillRect(0.0225 - 0.0015, y + 0.002, 0.003, 0.005); if (k % 6 === 0) ledDot(ctx, 0.005, y, 0.0012, '#3dff6e'); }
+    // Light brushed grey so the vertical PDUs read clearly against the dark rack
+    mspace(ctx, w, h, 0.045, 1.62); ctx.fillStyle = '#b8bcc2'; ctx.fillRect(0, 0, 0.045, 1.62);
+    for (let i = 0; i < 280; i++) { ctx.fillStyle = `rgba(${rnd() > 0.5 ? 255 : 0},${rnd() > 0.5 ? 255 : 0},${rnd() > 0.5 ? 255 : 0},${0.04 + rnd() * 0.06})`; ctx.fillRect(rnd() * 0.045, rnd() * 1.62, 0.012 + rnd() * 0.03, 0.0006); }
+    for (let k = 0; k < 30; k++) { const y = 1.62 - (0.18 + k * 0.045), big = k > 12 && k < 17, oh = big ? 0.026 : 0.02, ow = big ? 0.032 : 0.026; ctx.fillStyle = '#2a2c30'; ctx.fillRect(0.0225 - ow / 2, y - oh / 2, ow, oh); ctx.fillStyle = '#8a8e94'; ctx.fillRect(0.0225 - ow * 0.28, y - oh * 0.28, 0.003, 0.006); ctx.fillRect(0.0225 + ow * 0.28 - 0.003, y - oh * 0.28, 0.003, 0.006); ctx.fillRect(0.0225 - 0.0015, y + 0.002, 0.003, 0.005); if (k % 6 === 0) ledDot(ctx, 0.005, y, 0.0012, '#3dff6e'); }
     ctx.fillStyle = '#0d2b1e'; ctx.fillRect(0.008, 0.06, 0.029, 0.03); ctx.fillStyle = '#3dff6e'; ctx.font = 'bold 0.009px Arial'; ctx.textAlign = 'center'; ctx.fillText('6.4A', 0.0225, 0.079);
-    ctx.fillStyle = '#2a2c31'; ctx.fillRect(0.008, 1.50, 0.029, 0.06); ctx.fillStyle = '#c8361c'; ctx.fillRect(0.016, 1.515, 0.013, 0.03);
+    ctx.fillStyle = '#9a9ea5'; ctx.fillRect(0.008, 1.50, 0.029, 0.06); ctx.fillStyle = '#c8361c'; ctx.fillRect(0.016, 1.515, 0.013, 0.03);
   });
   const rearTex = (u) => tex('rear_face_' + u + 'u', 1024, Math.round(1024 * u * U / CW), (ctx, w, h) => {
     const H = u * U; mspace(ctx, w, h, CW, H);

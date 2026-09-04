@@ -10,7 +10,8 @@ const COMPONENT_KIND_LABEL: Record<string, string> = {
 };
 
 export function Playground() {
-  const [view, setView] = useState<RackView>('visual');
+  // `?view=visual|thermal|liquid` deep-links the initial view (handy for demos and screenshots).
+  const [view, setView] = useState<RackView>(() => { const q = new URLSearchParams(window.location.search).get('view'); return q === 'thermal' || q === 'liquid' ? q : 'visual'; });
   const [covers, setCovers] = useState(true);
   const [airflow, setAirflow] = useState(true);
   const [temps, setTemps] = useState<number[] | undefined>(undefined);

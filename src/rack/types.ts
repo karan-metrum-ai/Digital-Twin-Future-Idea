@@ -2,7 +2,7 @@
 import type React from 'react';
 
 export type Slot = { y: number; h: number; zr: number };
-export type RackView = 'visual' | 'thermal';
+export type RackView = 'visual' | 'thermal' | 'liquid';
 
 /** One decomposable rack item, as reported through `onItems` for building a parts legend. */
 export interface RackItemMeta {

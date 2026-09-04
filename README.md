@@ -13,7 +13,13 @@ npm run dev
 
 The app boots the `Playground` demo from `src/rack/Playground.tsx`:
 
-- Visual / Thermal camera views
+- Visual / Thermal camera / Liquid cooling views
+- Liquid cooling mode — direct-to-chip loop modelled on a real DLC row: overhead stainless supply/return headers
+  with valved drops into every rack, an end-of-row CDU, side-mounted rack manifolds and black quick-disconnect
+  branch hoses (blue/red collars) with animated coolant flow; the rear door lifts off and the camera flies to a rear
+  three-quarter view. Telemetry HUD: flow (L/min) and rack ΔP (bar) gauges, 1 Hz time-series for pump efficiency,
+  supply/return ΔT and CDU energy, and predictive analytics (pump bearing vibration vs ISO 10816 zones with a
+  30-day forecast to alarm, coolant conductivity / pH / particulate degradation). `?view=liquid` deep-links it.
 - Front covers and airflow toggles
 - Randomize load temperatures
 - Exploded view — pulls every component (servers, blanks, switches, patch panels, cable managers, PDUs, NUC) apart, with a live parts-count legend
@@ -45,6 +51,11 @@ src/rack/
   cabling/wireCabling.ts      Patch/power/network cable routing pass
   environment/                Floor, neighbour racks, studio lighting
   thermal/                    Airflow particle sim + thermal camera shader
+  liquid/                     Liquid cooling mode
+    LiquidLoop.ts             Overhead headers + drops, end-of-row CDU, rack manifolds, branch hoses, flow particles
+    LiquidLoopSim.ts          Lumped hydraulic loop model + 30-day condition forecasts (pure TS)
+    charts.tsx                SVG chart kit: line chart w/ hover + table view, gauge, stat tile
+    LiquidHud.tsx             The telemetry / predictive-analytics panel
   Playground.tsx              Demo harness
 ```
 

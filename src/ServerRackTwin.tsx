@@ -13,6 +13,9 @@ import { buildCoolingFloor } from './rack/environment/CoolingFloor';
 import { buildHeatSim } from './rack/thermal/HeatSim';
 import { buildThermalView } from './rack/thermal/ThermalView';
 import { buildCoolingVapor } from './rack/thermal/CoolingVapor';
+import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
+import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
+import { LiquidHud } from './rack/liquid/LiquidHud';
 import type { Slot, RackView, ServerRackTwinProps } from './rack/types';
 
 export type { Slot, RackView, ServerRackTwinProps } from './rack/types';
@@ -23,6 +26,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [internalView, setInternalView] = useState<RackView>('visual');
+  const [liquidState, setLiquidState] = useState<LoopState | null>(null);
   const v = view ?? internalView;
   const setView = (nv: RackView) => { setInternalView(nv); onViewChange?.(nv); };
 
@@ -48,6 +52,12 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const heat = buildHeatSim(THREE, rack.userData.slots as Slot[]); scene.add(heat);
     const vapor = buildCoolingVapor(THREE); scene.add(vapor);
     const thermal = buildThermalView(THREE, scene, rack, rack.userData.slots as Slot[]);
+    // Liquid-cooling mode: overhead supply/return headers along the row, an end-of-row CDU, rack manifolds and
+    // per-server hoses with live coolant flow, driven by the hydraulic loop simulation (which shares the per-slot
+    // load temps with the thermal camera).
+    const liquid = buildLiquidLoop(THREE, rack.userData.slots as Slot[]); liquid.traverse((o: any) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); scene.add(liquid);
+    const loopSim = createLiquidLoopSim(rack.userData.slots as Slot[], thermal.temps as number[]);
+    liquid.userData.setTelemetry(loopSim.state().latest);
     const covers: THREE.Object3D[] = []; rack.traverse((o: any) => { if (/^bezel_/.test(o.name)) covers.push(o); });
     camera.position.set(2.2, 1.5, -1.9); controls.target.set(0, 1.1, -0.3); controls.update();
     const fit = () => { const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
@@ -78,19 +88,23 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
 
     // Front door: closed by default, click to swing it open (click again to close). Combines with the
     // exploded-view slider via `updateDoorTargets` — either one can hold the door open.
-    let explodeVal = 0, doorOpen = false;
+    let explodeVal = 0, doorOpen = false, liquidMode = false;
     const updateDoorTargets = () => {
       if (!doors) return;
       const frontAmt = Math.max(explodeVal, doorOpen ? 1 : 0);
       doors.hingeTargetY = doors.hingeClosedY + frontAmt * 4.27; // swings anticlockwise (viewed from above) away from the rack
-      doors.rdTargetZ = doors.rdClosedZ - explodeVal * 0.5;
+      doors.rdTargetZ = doors.rdClosedZ - Math.max(explodeVal, liquidMode ? 1 : 0) * 0.5; // rear door also slides off in liquid mode to expose the manifolds
     };
+    // Smooth camera fly-to (liquid mode jumps to a rear three-quarter view where the manifolds and CDU read);
+    // any orbit drag cancels it.
+    let fly: { pos: THREE.Vector3; tgt: THREE.Vector3 } | null = null;
+    const flyTo = (pos: [number, number, number], tgt: [number, number, number]) => { fly = { pos: new THREE.Vector3(...pos), tgt: new THREE.Vector3(...tgt) }; };
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
     const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
     const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
     let downX = 0, downY = 0, downT = 0;
-    const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); };
+    const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); fly = null; };
     const onPointerUp = (e: PointerEvent) => {
       const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
       if (dragged) return; // an orbit drag, not a click
@@ -101,11 +115,14 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
-    let raf = 0; const t0 = performance.now();
+    let raf = 0; const t0 = performance.now(); let lastT = 0;
     const loop = () => {
-      const t = (performance.now() - t0) / 1000; heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
+      const t = (performance.now() - t0) / 1000; const dt = Math.min(0.25, t - lastT); lastT = t;
+      heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
+      const loopState = loopSim.step(dt); liquid.userData.setTelemetry(loopState.latest); liquid.userData.tick(t, renderer.getPixelRatio());
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
+      if (fly) { camera.position.lerp(fly.pos, 0.09); controls.target.lerp(fly.tgt, 0.09); if (camera.position.distanceTo(fly.pos) < 0.01) fly = null; }
       if (doors) {
         if (doors.hingeTargetY !== undefined) doors.hinge.rotation.y += (doors.hingeTargetY - doors.hinge.rotation.y) * 0.045;
         if (doors.rdTargetZ !== undefined) doors.rd.position.z += (doors.rdTargetZ - doors.rd.position.z) * 0.045;
@@ -114,24 +131,41 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     };
     raf = requestAnimationFrame(loop);
     apiRef.current = {
-      setThermal(on: boolean) { if (on) { heat.visible = false; vapor.visible = false; renderer.toneMapping = THREE.NoToneMapping; } else { heat.visible = apiRef.current.airflow; vapor.visible = apiRef.current.airflow; renderer.toneMapping = THREE.ACESFilmicToneMapping; } thermal.set(on); },
+      // One entry point for the three views. Air-side effects (intake streaks, exhaust plumes, floor vapour) only
+      // make sense in the visual/air-cooled view; the liquid view swaps them for the coolant loop.
+      setMode(mode: RackView) {
+        apiRef.current.mode = mode;
+        const air = mode === 'visual' && apiRef.current.airflow;
+        heat.visible = air; vapor.visible = air; liquid.visible = mode === 'liquid';
+        renderer.toneMapping = mode === 'thermal' ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+        thermal.set(mode === 'thermal');
+        const wasLiquid = liquidMode; liquidMode = mode === 'liquid'; updateDoorTargets();
+        if (doors) doors.rd.visible = !liquidMode; // rear door removed for service in the liquid view (as in the reference rigs)
+        if (liquidMode && !wasLiquid) flyTo([-2.4, 2.5, -3.3], [0.7, 1.4, -0.3]); // rear-left three-quarter: manifolds, overhead headers, CDU at the row end
+      },
       setCovers(on: boolean) { covers.forEach((m) => (m.visible = on)); },
-      setAirflow(on: boolean) { apiRef.current.airflow = on; if (!thermal.active) { heat.visible = on; vapor.visible = on; } },
-      setTemps(a: number[]) { thermal.setTemps(a); },
+      setAirflow(on: boolean) { apiRef.current.airflow = on; const air = apiRef.current.mode === 'visual' && on; heat.visible = air; vapor.visible = air; },
+      setTemps(a: number[]) { thermal.setTemps(a); loopSim.setLoad(a); },
+      loopState() { return loopSim.state(); },
+      /** Jump the camera (no animation) — used by tooling/screenshots; `flyTo` is the animated version. */
+      setCamera(pos: [number, number, number], tgt: [number, number, number]) { fly = null; camera.position.set(...pos); controls.target.set(...tgt); controls.update(); },
+      flyTo,
       setExplode(t: number) {
         explodeItems.forEach((it) => it.target.set(it.ex * t, it.ey * t, it.ez * t));
+        liquid.userData.setExploded(t);
         (rack.userData.cableLikeObjects as THREE.Object3D[]).forEach((o) => { o.visible = t < 0.04; });
         const labelAlpha = Math.min(1, Math.max(0, (t - 0.25) / 0.35)); // names appear once the stack has opened up
         labels.forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; });
         explodeVal = t; updateDoorTargets();
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
-      airflow: showAirflow,
+      airflow: showAirflow, mode: 'visual' as RackView,
       async exportGLB() { const blob: Blob = await new Promise((res) => new GLTFExporter().parse(rack, (r) => res(new Blob([r as ArrayBuffer], { type: 'model/gltf-binary' })), () => {}, { binary: true })); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-rack-42u.glb'; a.click(); },
       slots: rack.userData.slots as Slot[], temps: thermal.temps as number[],
       items: explodeItems.map((it) => ({ kind: it.kind, label: it.label })),
     };
     onItems?.(apiRef.current.items);
+    if (import.meta.env.DEV) (window as any).__rackTwin = apiRef.current; // dev-only hook for tooling / screenshot scripts
     if (explode) apiRef.current.setExplode(explode);
     return () => {
       cancelAnimationFrame(raf); ro.disconnect(); controls.dispose();
@@ -142,21 +176,30 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     };
   }, []);
 
-  useEffect(() => { apiRef.current?.setThermal(v === 'thermal'); }, [v]);
+  useEffect(() => { apiRef.current?.setMode(v); }, [v]);
+  // The loop sim runs inside the render loop at 1 Hz; while the liquid view is up, mirror its state into React at
+  // the same cadence so the HUD charts advance without re-rendering on every animation frame.
+  useEffect(() => {
+    if (v !== 'liquid') return;
+    const pull = () => { const a = apiRef.current; if (a) setLiquidState(a.loopState()); };
+    pull(); const id = window.setInterval(pull, 1000);
+    return () => window.clearInterval(id);
+  }, [v]);
   useEffect(() => { apiRef.current?.setCovers(showCovers); }, [showCovers]);
   useEffect(() => { apiRef.current?.setExplode(explode); }, [explode]);
   useEffect(() => { apiRef.current?.setAirflow(showAirflow); }, [showAirflow]);
   useEffect(() => { if (temps) apiRef.current?.setTemps(temps); }, [temps]);
 
-  const thermalOn = v === 'thermal';
+  const thermalOn = v === 'thermal', liquidOn = v === 'liquid';
+  const VIEW_LABEL: Record<RackView, string> = { visual: 'Visual', thermal: 'Thermal camera', liquid: 'Liquid cooling' };
   const hottest = (() => { const a = apiRef.current; if (!a) return null; const t: number[] = temps ?? a.temps; const i = t.indexOf(Math.max(...t)); const s = a.slots[i]; if (!s) return null; const u = Math.round((s.y - s.h / 2 - 0.13) / 0.04445) + 1; return `HOTTEST U${u} · ${Math.round(s.h / 0.04445)}U · ${(19.5 + Math.min(1, t[i]) * 28.5).toFixed(1)} °C`; })();
 
   return (
-    <div className={className} style={{ position: 'relative', width: '100%', height: '100%', background: thermalOn ? '#000' : background, overflow: 'hidden', fontFamily: '"Helvetica Neue", Helvetica, sans-serif', ...style }}>
+    <div className={className} style={{ position: 'relative', width: '100%', height: '100%', background: thermalOn ? '#000' : liquidOn ? '#0f1318' : background, overflow: 'hidden', fontFamily: '"Helvetica Neue", Helvetica, sans-serif', ...style }}>
       <div ref={hostRef} style={{ position: 'absolute', inset: 0 }} />
       <div role="tablist" style={{ position: 'absolute', top: 18, left: 20, display: 'flex', gap: 2, background: 'rgba(12,13,16,0.72)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8, padding: 3, backdropFilter: 'blur(8px)' }}>
-        {(['visual', 'thermal'] as RackView[]).map((k) => (
-          <button key={k} onClick={() => setView(k)} aria-pressed={v === k} style={{ appearance: 'none', border: 0, background: v === k ? '#eef0f4' : 'transparent', color: v === k ? '#16171b' : '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>{k === 'visual' ? 'Visual' : 'Thermal camera'}</button>
+        {(['visual', 'thermal', 'liquid'] as RackView[]).map((k) => (
+          <button key={k} onClick={() => setView(k)} aria-pressed={v === k} style={{ appearance: 'none', border: 0, background: v === k ? '#eef0f4' : 'transparent', color: v === k ? '#16171b' : '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>{VIEW_LABEL[k]}</button>
         ))}
         <button onClick={() => apiRef.current?.exportGLB()} style={{ appearance: 'none', border: 0, background: 'transparent', color: '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>Download GLB</button>
       </div>
@@ -180,9 +223,10 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
           </div>
         </>
       )}
+      {liquidOn && <LiquidHud state={liquidState} />}
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <b style={{ fontSize: 14, color: '#eef0f4' }}>42U enterprise rack</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan · click the front door to open it</span>
+        <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
       </div>
     </div>
   );

@@ -29,7 +29,7 @@ export function createMaterials(THREE, T, anim) {
     switch48: M('switch_faceplate_48', { map: T.switch48, roughness: 0.5, metalness: 0.4 }),
     switch24: M('switch_faceplate_24', { map: T.switch24, roughness: 0.5, metalness: 0.4 }),
     patch: M('patch_panel_faceplate', { map: T.patch, roughness: 0.55, metalness: 0.4 }),
-    pdu: M('pdu_faceplate', { map: T.pdu, roughness: 0.6, metalness: 0.3 }),
+    pdu: M('pdu_faceplate', { map: T.pdu, color: 0xffffff, roughness: 0.35, metalness: 0.75 }),
     rear: { 1: M('rear_io_1u', { map: T.rear[1], roughness: 0.55, metalness: 0.45 }), 2: M('rear_io_2u', { map: T.rear[2], roughness: 0.55, metalness: 0.45 }), 3: M('rear_io_3u', { map: T.rear[3], roughness: 0.55, metalness: 0.45 }), 4: M('rear_io_4u', { map: T.rear[4], roughness: 0.55, metalness: 0.45 }) },
     screw: M('zinc_screw', { color: 0xb8bcc2, roughness: 0.3, metalness: 0.9 }),
     rubber: M('rubber', { color: 0x141416, roughness: 0.95, metalness: 0 }),
