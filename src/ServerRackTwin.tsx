@@ -5,10 +5,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { buildRack } from './rack/buildRack';
-import { buildEnvironment } from './rack/environment/Environment';
-import { buildRackReplicas } from './rack/environment/RackRow';
+import { buildEnvironment, ROOM_BOUNDS } from './rack/environment/Environment';
+import { buildRackReplicas, LIVE_RACK_PLACEMENT } from './rack/environment/RackRow';
 import { buildRackAirflowReplicas } from './rack/environment/RackAirflow';
 import { buildEnvMap } from './rack/environment/EnvironmentMap';
 import { buildCoolingFloor } from './rack/environment/CoolingFloor';
@@ -18,56 +17,101 @@ import { buildCoolingVapor } from './rack/thermal/CoolingVapor';
 import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
 import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
 import { LiquidHud } from './rack/liquid/LiquidHud';
+import { IssuePanel } from './rack/issues/IssuePanel';
+import { RackInfoHUD } from './rack/issues/RackInfoHUD';
+import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
+import { buildRackFocus, pickRackId, rackFocusPose } from './rack/issues/RackFocus';
+import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
 import type { Slot, RackView, ServerRackTwinProps } from './rack/types';
 
-export type { Slot, RackView, ServerRackTwinProps } from './rack/types';
+export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity } from './rack/types';
+export { DEMO_ISSUES, RACKS, LIVE_RACK_ID } from './rack/issues/issues';
 export { Playground } from './rack/Playground';
 
 /* ------------------------------------------------------------------ component ------------------------------------------------------------------ */
-export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, background = '#16171b', className, style }: ServerRackTwinProps) {
+export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, showIssues = true, selectedRack, onSelectRack, background = '#16171b', className, style }: ServerRackTwinProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [internalView, setInternalView] = useState<RackView>('visual');
   const [liquidState, setLiquidState] = useState<LoopState | null>(null);
   const v = view ?? internalView;
   const setView = (nv: RackView) => { setInternalView(nv); onViewChange?.(nv); };
+  // Rack selection: controlled via `selectedRack` when provided, otherwise internal. Picks made inside the 3D
+  // scene come back through `pickRef` so the render-loop closure never has to see React state.
+  const [internalSel, setInternalSel] = useState<string | null>(null);
+  const [openIssueId, setOpenIssueId] = useState<string | null>(null);
+  const sel = selectedRack !== undefined ? selectedRack : internalSel;
+  const selectRack = (id: string | null) => {
+    setInternalSel(id); onSelectRack?.(id);
+    // An open log excerpt only makes sense while its own rack is the selected one.
+    setOpenIssueId((open) => (open && id && issues.find((i) => i.id === open)?.rackId === id ? open : null));
+  };
+  const pickRef = useRef(selectRack); pickRef.current = selectRack;
+  const issuesRef = useRef(issues); issuesRef.current = issues;
 
   useEffect(() => {
     const host = hostRef.current; if (!host) return;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
     host.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 500);
     const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = 0.08;
+    controls.minDistance = 0.45; controls.maxDistance = 15;
+    controls.minPolarAngle = 0.08; controls.maxPolarAngle = Math.PI / 2 - 0.04; // keep the lens above the floor
+    // Keep the orbit target inside the room so pan + zoom cannot walk the camera through a wall.
+    const clampToRoom = (v: THREE.Vector3, pad = 0.2) => {
+      v.x = THREE.MathUtils.clamp(v.x, ROOM_BOUNDS.minX + pad, ROOM_BOUNDS.maxX - pad);
+      v.y = THREE.MathUtils.clamp(v.y, ROOM_BOUNDS.minY, ROOM_BOUNDS.maxY - pad);
+      v.z = THREE.MathUtils.clamp(v.z, ROOM_BOUNDS.minZ + pad, ROOM_BOUNDS.maxZ - pad);
+      return v;
+    };
     const hemi = new THREE.HemisphereLight(0xdfe6f2, 0x2a2d34, 0.55); scene.add(hemi);
-    const key = new THREE.DirectionalLight(0xffffff, 1.8); key.position.set(3.5, 5, 4); key.castShadow = true; key.shadow.mapSize.set(4096, 4096); key.shadow.bias = -0.0001; key.shadow.normalBias = 0.002; scene.add(key);
+    const key = new THREE.DirectionalLight(0xffffff, 1.8); key.position.set(3.5, 5, 4); configureKeyShadow(key, ROOM_BOUNDS); scene.add(key);
     const fill = new THREE.DirectionalLight(0xcfd9ff, 0.5); fill.position.set(-4, 3, -2); scene.add(fill);
     const front = new THREE.DirectionalLight(0xe6ecff, 1.2); front.position.set(-1.5, 2.5, 5); scene.add(front);
     scene.environment = buildEnvMap(THREE, renderer);
-    scene.fog = new THREE.FogExp2(0x16171b, 0.07);
-    const rack = buildRack(THREE); rack.traverse((o: any) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); scene.add(rack);
-    // Two-row hot-aisle layout: nine baked replicas of this rack (four beside it facing front, five behind it
-    // turned 180° so the rows stand back-to-back). Built before the labels/doors are wired so the copies are clean.
-    scene.add(buildRackReplicas(THREE, rack));
+    scene.fog = new THREE.FogExp2(0x1a1c20, 0.035);
+    const rack = buildRack(THREE); applySilhouetteShadows(rack); scene.add(rack);
+    // Two full rows of ten baked replicas of this rack (five facing front, five behind turned 180° so the rows
+    // stand back-to-back). Baked while the interactive rack is still sitting at the origin (identity transform)
+    // so the replica geometry lines up — it's picked up and moved to LIVE_RACK_PLACEMENT afterwards, and a
+    // replica now fills the centre slot it used to occupy, same as every other slot in the row.
+    const replicas = buildRackReplicas(THREE, rack); disableShadows(replicas); scene.add(replicas);
+    // Rack footprint (still at the origin) — the selection outline is sized from it and re-posed onto whichever rack is picked.
+    const rackBox = new THREE.Box3().setFromObject(rack);
     scene.add(buildEnvironment(THREE));
-    scene.add(buildCoolingFloor(THREE));
-    const heat = buildHeatSim(THREE, rack.userData.slots as Slot[]); scene.add(heat);
-    const vapor = buildCoolingVapor(THREE); scene.add(vapor);
-    // Heat simulation + cold-air vapour for the nine other racks in the room — same intake/exhaust particle sim
-    // and floor grille as the interactive rack, instanced at each rack's placement.
+    // Selection outline + per-rack alarm badges for the issues panel; rack picking maps clicks back to rack ids.
+    const focus = buildRackFocus(THREE, rackBox, issuesRef.current); scene.add(focus);
+    // Heat simulation + cold-air vapour for the ten racks in the rows — same intake/exhaust particle sim and
+    // floor grille as the interactive rack, instanced at each rack's placement (including the now-dummy centre slot).
     const airflowReplicas = buildRackAirflowReplicas(THREE, rack.userData.slots as Slot[]); scene.add(airflowReplicas);
-    const thermal = buildThermalView(THREE, scene, rack, rack.userData.slots as Slot[]);
+    // Pick the interactive rack up out of the row and place it elsewhere in the hall.
+    rack.position.set(LIVE_RACK_PLACEMENT.x, 0, LIVE_RACK_PLACEMENT.z); rack.rotation.y = LIVE_RACK_PLACEMENT.rotY;
+    // Its own cooling floor grille, intake/exhaust particle sim and cold-air vapour move with it.
+    const liveEnv = new THREE.Group(); liveEnv.name = 'live_rack_env';
+    liveEnv.position.set(LIVE_RACK_PLACEMENT.x, 0, LIVE_RACK_PLACEMENT.z); liveEnv.rotation.y = LIVE_RACK_PLACEMENT.rotY;
+    scene.add(liveEnv);
+    liveEnv.add(buildCoolingFloor(THREE));
+    const heat = buildHeatSim(THREE, rack.userData.slots as Slot[]); liveEnv.add(heat);
+    const vapor = buildCoolingVapor(THREE); liveEnv.add(vapor);
+    const thermal = buildThermalView(THREE, scene, rack, rack.userData.slots as Slot[], LIVE_RACK_PLACEMENT.x, LIVE_RACK_PLACEMENT.z, LIVE_RACK_PLACEMENT.rotY);
     // Liquid-cooling mode: overhead supply/return headers along both rows, an end-of-row CDU per row, and rack
     // manifolds + per-server hoses with live coolant flow on EVERY rack (not just this one), driven by the
-    // hydraulic loop simulation (which shares the per-slot load temps with the thermal camera).
-    const liquid = buildLiquidLoop(THREE, rack.userData.slots as Slot[]); liquid.traverse((o: any) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); scene.add(liquid);
+    // hydraulic loop simulation (which shares the per-slot load temps with the thermal camera). The interactive
+    // rack's own fixtures are placed at LIVE_RACK_PLACEMENT too, wherever it's actually standing.
+    const liquid = buildLiquidLoop(THREE, rack.userData.slots as Slot[], undefined, LIVE_RACK_PLACEMENT.x, LIVE_RACK_PLACEMENT.z, LIVE_RACK_PLACEMENT.rotY);
+    disableShadows(liquid); applySilhouetteShadows(liquid); scene.add(liquid);
     const loopSim = createLiquidLoopSim(rack.userData.slots as Slot[], thermal.temps as number[]);
     liquid.userData.setTelemetry(loopSim.state().latest);
     const covers: THREE.Object3D[] = []; rack.traverse((o: any) => { if (/^bezel_/.test(o.name)) covers.push(o); });
-    camera.position.set(2.9, 1.9, 2.6); controls.target.set(0, 1.0, -0.2); controls.update(); // front three-quarter of row A, our rack centred
+    // Front three-quarter of the interactive rack, wherever it's actually standing now (same relative framing
+    // as the old "front three-quarter of row A" view, rotated to match the rack's new orientation).
+    camera.position.set(LIVE_RACK_PLACEMENT.x + 2.8, 1.9, LIVE_RACK_PLACEMENT.z - 2.9);
+    controls.target.set(LIVE_RACK_PLACEMENT.x - 0.2, 1.0, LIVE_RACK_PLACEMENT.z);
+    controls.update();
     const fit = () => { const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
     fit(); const ro = new ResizeObserver(fit); ro.observe(host);
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
@@ -86,13 +130,20 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       sp.scale.set(0.42, 0.066, 1); sp.renderOrder = 10; sp.visible = false; sp.userData.thermalSkip = true;
       return sp;
     };
-    const labels: THREE.Sprite[] = explodeItems.map((it) => {
-      const sp = makeLabel(`${KIND_NAME[it.kind] ?? it.kind} · ${it.label}`);
-      const b = it.bbox, cz = (b.min.z + b.max.z) / 2;
-      if (it.kind === 'pdu') sp.position.set((b.min.x + b.max.x) / 2, b.max.y + 0.06, cz); // above the vertical PDU
-      else sp.position.set(b.max.x + 0.26, (b.min.y + b.max.y) / 2, b.max.z + 0.02); // off the item's right edge
-      it.group.add(sp); return sp;
-    });
+
+    // Labels are created lazily the first time explode > 0 so idle sessions skip 512px canvases.
+    let labels: THREE.Sprite[] | null = null;
+    const ensureLabels = () => {
+      if (labels) return labels;
+      labels = explodeItems.map((it) => {
+        const sp = makeLabel(`${KIND_NAME[it.kind] ?? it.kind} · ${it.label}`);
+        const b = it.bbox, cz = (b.min.z + b.max.z) / 2;
+        if (it.kind === 'pdu') sp.position.set((b.min.x + b.max.x) / 2, b.max.y + 0.06, cz);
+        else sp.position.set(b.max.x + 0.26, (b.min.y + b.max.y) / 2, b.max.z + 0.02);
+        it.group.add(sp); return sp;
+      });
+      return labels;
+    };
 
     // Front door: closed by default, click to swing it open (click again to close). Combines with the
     // exploded-view slider via `updateDoorTargets` — either one can hold the door open.
@@ -103,39 +154,86 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       doors.hingeTargetY = doors.hingeClosedY + frontAmt * 4.27; // swings anticlockwise (viewed from above) away from the rack
       doors.rdTargetZ = doors.rdClosedZ - Math.max(explodeVal, liquidMode ? 1 : 0) * 0.5; // rear door also slides off in liquid mode to expose the manifolds
     };
-    // Smooth camera fly-to (liquid mode jumps to a rear three-quarter view where the manifolds and CDU read);
-    // any orbit drag cancels it.
-    let fly: { pos: THREE.Vector3; tgt: THREE.Vector3 } | null = null;
-    const flyTo = (pos: [number, number, number], tgt: [number, number, number]) => { fly = { pos: new THREE.Vector3(...pos), tgt: new THREE.Vector3(...tgt) }; };
+    // Camera fly-to (rack focus, and liquid mode's rear three-quarter view where the manifolds and CDU read). The
+    // camera travels a quadratic arc whose apex sits above the rack tops, so a move between racks lifts over the
+    // rows instead of cutting straight through them, and both position and orbit target ease in/out over a fixed
+    // duration. Any orbit drag cancels it.
+    const ARC_CLEAR_Y = 3.4; // rack tops are ~2.1 m; overhead coolant headers sit below this too
+    let fly: { p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; t0: THREE.Vector3; t1: THREE.Vector3; start: number; dur: number } | null = null;
+    const flyTo = (pos: [number, number, number], tgt: [number, number, number]) => {
+      const p0 = camera.position.clone(), p2 = clampToRoom(new THREE.Vector3(...pos));
+      const t0 = controls.target.clone(), t1 = clampToRoom(new THREE.Vector3(...tgt), 0.35);
+      const dist = p0.distanceTo(p2);
+      // Arc control point: midway in plan, lifted so the curve's apex clears the rack tops. A short hop (same rack,
+      // small nudge) stays low; a cross-hall move rises proportionally, capped below the ceiling by clampToRoom.
+      const hop = dist < 1.5; // small nudge around the same rack: no need to climb
+      const apexY = hop ? Math.max(p0.y, p2.y) + 0.15 : Math.max(p0.y, p2.y, ARC_CLEAR_Y) + Math.min(1.0, dist * 0.08);
+      const p1 = clampToRoom(new THREE.Vector3((p0.x + p2.x) / 2, 2 * apexY - (p0.y + p2.y) / 2, (p0.z + p2.z) / 2)); // Bezier midpoint == apexY
+      const dur = THREE.MathUtils.clamp(0.9 + dist * 0.18, 1.0, 2.4);
+      fly = { p0, p1, p2, t0, t1, start: performance.now() / 1000, dur };
+    };
+    const easeInOut = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
+    const bez = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, u: number, out: THREE.Vector3) => {
+      const w0 = (1 - u) * (1 - u), w1 = 2 * (1 - u) * u, w2 = u * u;
+      return out.set(a.x * w0 + b.x * w1 + c.x * w2, a.y * w0 + b.y * w1 + c.y * w2, a.z * w0 + b.z * w1 + c.z * w2);
+    };
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
     const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
     const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
+    // Which rack (if any) is under the pointer — any of the ten replicas, the interactive rack, or an alarm badge.
+    const rackUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickRackId(raycaster, focus, replicas, rack, LIVE_RACK_ID) as string | null; };
+    // Select a rack: outline it and (optionally) fly the camera to its front three-quarter.
+    const selectRackInScene = (id: string | null, flyCamera: boolean) => {
+      focus.userData.select(id);
+      const info = id ? RACK_BY_ID[id] : null;
+      if (info && flyCamera) { const p = rackFocusPose(info); flyTo(p.pos as [number, number, number], p.tgt as [number, number, number]); }
+    };
     let downX = 0, downY = 0, downT = 0;
     const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); fly = null; };
     const onPointerUp = (e: PointerEvent) => {
       const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
       if (dragged) return; // an orbit drag, not a click
-      if (hitsFrontDoor(e)) { doorOpen = !doorOpen; updateDoorTargets(); }
+      if (hitsFrontDoor(e)) { doorOpen = !doorOpen; updateDoorTargets(); return; }
+      const id = rackUnderPointer(e);
+      if (id) pickRef.current(id); // React owns the selection; it flows back down through api.selectRack
     };
-    const onPointerMove = (e: PointerEvent) => { renderer.domElement.style.cursor = hitsFrontDoor(e) ? 'pointer' : ''; };
+    let lastHoverMs = 0;
+    const onPointerMove = (e: PointerEvent) => {
+      const now = performance.now();
+      if (now - lastHoverMs < 80) return;
+      lastHoverMs = now;
+      renderer.domElement.style.cursor = hitsFrontDoor(e) || rackUnderPointer(e) ? 'pointer' : '';
+    };
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
-    let raf = 0; const t0 = performance.now(); let lastT = 0;
+    let raf = 0; const t0 = performance.now(); let lastT = 0; let liquidFrame = 0;
     const loop = () => {
       const t = (performance.now() - t0) / 1000; const dt = Math.min(0.25, t - lastT); lastT = t;
       heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); airflowReplicas.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
-      const loopState = loopSim.step(dt); liquid.userData.setTelemetry(loopState.latest); liquid.userData.tick(t, renderer.getPixelRatio());
+      if (liquidMode) {
+        const loopState = loopSim.step(dt); liquid.userData.setTelemetry(loopState.latest);
+        // Update coolant particles every other frame — still smooth enough when liquid view is active.
+        if ((++liquidFrame & 1) === 0) liquid.userData.tick(t, renderer.getPixelRatio());
+      }
+      focus.userData.tick(t);
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
-      if (fly) { camera.position.lerp(fly.pos, 0.09); controls.target.lerp(fly.tgt, 0.09); if (camera.position.distanceTo(fly.pos) < 0.01) fly = null; }
+      if (fly) {
+        const u = Math.min(1, (performance.now() / 1000 - fly.start) / fly.dur), e = easeInOut(u);
+        bez(fly.p0, fly.p1, fly.p2, e, camera.position);
+        controls.target.lerpVectors(fly.t0, fly.t1, e);
+        if (u >= 1) fly = null;
+      }
       if (doors) {
         if (doors.hingeTargetY !== undefined) doors.hinge.rotation.y += (doors.hingeTargetY - doors.hinge.rotation.y) * 0.045;
         if (doors.rdTargetZ !== undefined) doors.rd.position.z += (doors.rdTargetZ - doors.rd.position.z) * 0.045;
       }
-      controls.update(); renderer.render(scene, camera); raf = requestAnimationFrame(loop);
+      controls.update();
+      clampToRoom(camera.position); clampToRoom(controls.target, 0.35);
+      renderer.render(scene, camera); raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     apiRef.current = {
@@ -156,19 +254,24 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setTemps(a: number[]) { thermal.setTemps(a); loopSim.setLoad(a); },
       loopState() { return loopSim.state(); },
       /** Jump the camera (no animation) — used by tooling/screenshots; `flyTo` is the animated version. */
-      setCamera(pos: [number, number, number], tgt: [number, number, number]) { fly = null; camera.position.set(...pos); controls.target.set(...tgt); controls.update(); },
+      setCamera(pos: [number, number, number], tgt: [number, number, number]) { fly = null; camera.position.set(...pos); controls.target.set(...tgt); clampToRoom(camera.position); clampToRoom(controls.target, 0.35); controls.update(); },
       flyTo,
       setExplode(t: number) {
         explodeItems.forEach((it) => it.target.set(it.ex * t, it.ey * t, it.ez * t));
         liquid.userData.setExploded(t);
         (rack.userData.cableLikeObjects as THREE.Object3D[]).forEach((o) => { o.visible = t < 0.04; });
         const labelAlpha = Math.min(1, Math.max(0, (t - 0.25) / 0.35)); // names appear once the stack has opened up
-        labels.forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; });
+        if (t > 0.01) ensureLabels().forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; });
         explodeVal = t; updateDoorTargets();
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
+      /** Outline rack `id` (null clears) and, when `flyCamera`, fly to its front three-quarter. */
+      selectRack(id: string | null, flyCamera = true) { selectRackInScene(id, flyCamera); },
+      /** Replace the open-issue list — rebuilds the alarm badges floating over the racks. */
+      setIssues(list: any[]) { focus.userData.setIssues(list); },
+      selectedRack() { return focus.userData.selectedId as string | null; },
+      cameraPos() { return camera.position.toArray(); },
       airflow: showAirflow, mode: 'visual' as RackView,
-      async exportGLB() { const blob: Blob = await new Promise((res) => new GLTFExporter().parse(rack, (r) => res(new Blob([r as ArrayBuffer], { type: 'model/gltf-binary' })), () => {}, { binary: true })); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'server-rack-42u.glb'; a.click(); },
       slots: rack.userData.slots as Slot[], temps: thermal.temps as number[],
       items: explodeItems.map((it) => ({ kind: it.kind, label: it.label })),
     };
@@ -197,6 +300,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   useEffect(() => { apiRef.current?.setExplode(explode); }, [explode]);
   useEffect(() => { apiRef.current?.setAirflow(showAirflow); }, [showAirflow]);
   useEffect(() => { if (temps) apiRef.current?.setTemps(temps); }, [temps]);
+  useEffect(() => { apiRef.current?.selectRack(sel, true); }, [sel]);
+  useEffect(() => { apiRef.current?.setIssues(issues); }, [issues]);
 
   const thermalOn = v === 'thermal', liquidOn = v === 'liquid';
   const VIEW_LABEL: Record<RackView, string> = { visual: 'Visual', thermal: 'Thermal camera', liquid: 'Liquid cooling' };
@@ -209,14 +314,13 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         {(['visual', 'thermal', 'liquid'] as RackView[]).map((k) => (
           <button key={k} onClick={() => setView(k)} aria-pressed={v === k} style={{ appearance: 'none', border: 0, background: v === k ? '#eef0f4' : 'transparent', color: v === k ? '#16171b' : '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>{VIEW_LABEL[k]}</button>
         ))}
-        <button onClick={() => apiRef.current?.exportGLB()} style={{ appearance: 'none', border: 0, background: 'transparent', color: '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>Download GLB</button>
       </div>
       {thermalOn && (
         <>
           <div style={{ position: 'absolute', right: 20, top: 18, display: 'flex', flexDirection: 'column', gap: 8, color: '#eef0f4', font: '12px/1.3 "SF Mono", Menlo, monospace', letterSpacing: '0.04em', textShadow: '0 1px 2px #000' }}>
-            <div>FLIR-SIM · IRONBOW · ε 0.95</div>
+            <div>FLIR-SIM · RAINBOW · ε 0.95</div>
             <div style={{ display: 'grid', gridTemplateColumns: '14px auto', gap: 10 }}>
-              <div style={{ width: 14, height: 220, border: '1px solid rgba(255,255,255,0.5)', background: 'linear-gradient(to top, #000, #210061, #9e009e, #eb471f, #ffbd00, #fffff0)' }} />
+              <div style={{ width: 14, height: 220, border: '1px solid rgba(255,255,255,0.5)', background: 'linear-gradient(to top, #000005, #0d008c, #008cf2, #00bf40, #d9eb00, #ff7300, #e60d0d, #fff2d9)' }} />
               <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}><span>48.0 °C</span><span>38.5</span><span>29.0</span><span>19.5 °C</span></div>
             </div>
             {hottest && <div style={{ opacity: 0.8 }}>{hottest}</div>}
@@ -232,9 +336,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
+      <RackInfoHUD selectedRackId={sel} />
+      {showIssues && <IssuePanel issues={issues} selectedRackId={sel} openIssueId={openIssueId} onSelectRack={selectRack} onOpenIssue={setOpenIssueId} />}
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
       </div>
     </div>
   );

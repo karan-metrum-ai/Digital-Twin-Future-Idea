@@ -7,7 +7,7 @@
 // to the same "Airflow & heat" toggle.
 
 export function buildCoolingVapor(THREE, density = 1) {
-  const N = Math.max(80, Math.round(600 * density));
+  const N = Math.max(80, Math.round(300 * density));
   const seed = new Float32Array(N);
   let s = 5; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < N; i++) seed[i] = rnd();

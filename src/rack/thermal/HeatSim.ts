@@ -4,7 +4,7 @@
 // plumes leaving the rear and rising. GPU-driven points; only a time uniform changes per frame.
 
 export function buildHeatSim(THREE, slots, density = 1) {
-  const N = Math.max(200, Math.round(2600 * density));
+  const N = Math.max(200, Math.round(1400 * density));
   const seed = new Float32Array(N), slotY = new Float32Array(N), slotH = new Float32Array(N), slotZr = new Float32Array(N), kind = new Float32Array(N);
   let s = 11; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < N; i++) { const sl = slots[Math.floor(rnd() * slots.length)]; seed[i] = rnd(); slotY[i] = sl.y; slotH[i] = sl.h; slotZr[i] = sl.zr; kind[i] = i % 5 === 0 ? 1 : 0; }
@@ -47,7 +47,7 @@ export function buildHeatSim(THREE, slots, density = 1) {
           float q = p, x = (aSeed - 0.5) * 0.5 + sin(uTime * 0.8 + s4 * 30.0) * 0.06 * q;
           pos = vec3(x, aY + (s2 - 0.5) * aH + q * q * 1.2, aZr - 0.1 - q * 0.5 + sin(uTime + s3 * 20.0) * 0.04);
           heat = 1.0; alpha = (1.0 - q) * q * 0.22;
-          gl_PointSize = (40.0 + 70.0 * q) * uPixelRatio;
+          gl_PointSize = (24.0 + 36.0 * q) * uPixelRatio;
         }
         vHeat = heat; vAlpha = alpha;
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);

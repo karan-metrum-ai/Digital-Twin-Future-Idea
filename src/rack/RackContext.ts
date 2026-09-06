@@ -38,8 +38,8 @@ export function createRackContext(THREE) {
   /* ---------------- mesh primitives ---------------- */
   ctx.box = (name, mat, w, h, d, x, y, z, parent) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.name = name + '_' + (idCounter++); m.position.set(x, y, z); (parent || ctx.curG).add(m); return m; };
   ctx.plane = (name, mat, w, h, x, y, z, rotY, parent) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat); m.name = name + '_' + (idCounter++); m.position.set(x, y, z); if (rotY) m.rotation.y = rotY; (parent || ctx.curG).add(m); return m; };
-  ctx.cyl = (name, mat, r, h, x, y, z, axis, parent, seg) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg || 20), mat); m.name = name + '_' + (idCounter++); m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; (parent || ctx.curG).add(m); return m; };
-  ctx.tube = (name, mat, pts, r) => { const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(...p))); const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, r, 10, false), mat); m.name = name + '_' + (idCounter++); m.userData.cableRoute = true; ctx.curG.add(m); const boot = ctx.cyl('connector_boot', mats.boot, r * 1.6, r * 6, ...pts[0], 'z', ctx.curG, 10); boot.userData.cableRoute = true; return m; };
+  ctx.cyl = (name, mat, r, h, x, y, z, axis, parent, seg) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg || 8), mat); m.name = name + '_' + (idCounter++); m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; (parent || ctx.curG).add(m); return m; };
+  ctx.tube = (name, mat, pts, r) => { const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(...p))); const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, r, 6, false), mat); m.name = name + '_' + (idCounter++); m.userData.cableRoute = true; ctx.curG.add(m); const boot = ctx.cyl('connector_boot', mats.boot, r * 1.6, r * 6, ...pts[0], 'z', ctx.curG, 6); boot.userData.cableRoute = true; return m; };
   ctx.yb = n => Y0 + (n - 1) * U;
   ctx.grillMesh = (w, h, x, y, z, mat) => { const m = ctx.plane('honeycomb', mat || mats.grill, w, h, x, y, z); if (!m.geometry.attributes.uv._scaled) { const uv = m.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 0.05, uv.getY(i) * h / 0.0433); uv.needsUpdate = true; } return m; };
 
@@ -49,7 +49,7 @@ export function createRackContext(THREE) {
     for (const sx of [-1, 1]) {
       ctx.box('rack_ear_flange', mat || mats.ear, 0.024, h, 0.003, sx * 0.2305, yc, ZF + 0.0028);
       ctx.box('rack_ear_body', mat || mats.ear, 0.004, h, 0.05, sx * 0.2205, yc, ZF - 0.025);
-      for (const f of [0.22, 0.78]) { ctx.cyl('ear_screw', mats.screw, 0.0045, 0.002, sx * 0.2305, ctx.yb(n) + f * u * U, ZF + 0.0053, 'z', ctx.curG, 12); }
+      ctx.cyl('ear_screw', mats.screw, 0.0045, 0.002, sx * 0.2305, ctx.yb(n) + 0.5 * u * U, ZF + 0.0053, 'z', ctx.curG, 6);
     }
   };
   ctx.chassis = (n, u, depth, mat) => {

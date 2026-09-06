@@ -1,5 +1,8 @@
 // Shared types for the rack model and the ServerRackTwin component.
 import type React from 'react';
+import type { RackIssue } from './issues/issues';
+
+export type { RackIssue, RackInfo, IssueCategory, IssueSeverity } from './issues/issues';
 
 export type Slot = { y: number; h: number; zr: number };
 export type RackView = 'visual' | 'thermal' | 'liquid';
@@ -11,6 +14,14 @@ export interface RackItemMeta {
 }
 
 export interface ServerRackTwinProps {
+  /** Open issues to list in the side panel and badge over racks; defaults to the built-in demo set. */
+  issues?: RackIssue[];
+  /** Hide the open-issues panel (badges and rack selection still work). */
+  showIssues?: boolean;
+  /** Controlled rack selection (rack id, e.g. "A-03"; null = none). Uncontrolled when omitted. */
+  selectedRack?: string | null;
+  /** Fires when a rack is picked in the scene or from the issues panel (null when the selection is cleared). */
+  onSelectRack?: (id: string | null) => void;
   /** Per-server-slot load temperature 0..1 (bottom → top). Drives thermal view. */
   temps?: number[];
   view?: RackView;

@@ -13,12 +13,14 @@
 // The row infrastructure (headers/hangers/drops/CDU) is built once per row through a placement transform, so row B
 // (rotated 180° behind the hot aisle — see environment/RackRow.ts) gets its own mirrored to its orientation.
 //
-// Per-rack fixtures (manifolds + feed hoses + branch hoses/QDs) are built once, in "rack-local" coordinates
-// (the same coordinate frame the interactive rack — at the origin — already used). The interactive rack gets
-// that construction directly, unmerged, so its branch hoses can still hide individually in the exploded view.
-// The other nine racks get the SAME fixtures baked into a handful of merged-by-material meshes (mirroring the
-// technique RackRow.ts uses for the rack bodies) and cloned at each rack's placement — full per-server hose detail
-// without paying a per-mesh draw call for every neighbour rack.
+// Per-rack fixtures (manifolds + feed hoses + branch hoses/QDs) are built once, in "rack-local" coordinates,
+// then placed via a group transform per rack — including the interactive rack, wherever it's actually standing
+// (RackRow.LIVE_RACK_PLACEMENT; it no longer sits in row A's centre slot). The interactive rack gets that
+// construction directly, unmerged, so its branch hoses can still hide individually in the exploded view. All
+// ten racks in the two rows (its old centre slot now filled with a dummy like every other slot) get the SAME
+// fixtures baked into a handful of merged-by-material meshes (mirroring the technique RackRow.ts uses for the
+// rack bodies) and cloned at each rack's placement — full per-server hose detail without paying a per-mesh draw
+// call for every neighbour rack.
 //
 // Coolant flow is visualised as soft particles — cool blue leaving the CDU along the supply header, down the
 // drop and manifold and into each branch; warm orange-red coming back up the return side to the CDU. The header
@@ -33,9 +35,9 @@ const SUP_HDR_Y = 2.32, RET_HDR_Y = 2.50, SUP_HDR_Z = -0.38, RET_HDR_Z = -0.52; 
 const ROW_END = Math.max(...ROW_XS) + 0.3;                       // outer face of the last rack in the row
 const HDR_X0 = -ROW_END - 0.25;                                  // far end of the headers
 const CDU_X = ROW_END + 0.30 + 0.30, CDU_W = 0.6, CDU_H = 2.0, CDU_D = 1.07; // end-of-row CDU, 0.3 m gap to the row
-const RACK_FLOW_N = 1800, HEADER_FLOW_N = 420;
+const RACK_FLOW_N = 900, HEADER_FLOW_N = 220;
 
-export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
+export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445, liveX = 0, liveZ = 0, liveRotY = 0) {
   const g = new THREE.Group(); g.name = 'liquid_loop'; g.visible = false;
   const M = (o) => new THREE.MeshStandardMaterial(o);
   const mats = {
@@ -57,9 +59,9 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
   const ledPump = M({ color: 0x3b8fe8, emissive: 0x3b8fe8, emissiveIntensity: 2.0 });
   const ledWarn = M({ color: 0xf0a020, emissive: 0xf0a020, emissiveIntensity: 0.4 });
   const box = (name, mat, w, h, d, x, y, z, parent = g) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.name = name; m.position.set(x, y, z); parent.add(m); return m; };
-  const cyl = (name, mat, r, h, x, y, z, axis, parent = g, seg = 20) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat); m.name = name; m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; parent.add(m); return m; };
-  const tube = (name, mat, pts, r, parent = g, seg = 64, tension = 0.5) => { const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)), false, 'centripetal', tension); const m = new THREE.Mesh(new THREE.TubeGeometry(curve, seg, r, 14, false), mat); m.name = name; parent.add(m); return m; };
-  const torus = (name, mat, r, tr, x, y, z, axis, parent = g) => { const m = new THREE.Mesh(new THREE.TorusGeometry(r, tr, 10, 28), mat); m.name = name; m.position.set(x, y, z); if (axis === 'y') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.y = Math.PI / 2; parent.add(m); return m; };
+  const cyl = (name, mat, r, h, x, y, z, axis, parent = g, seg = 10) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat); m.name = name; m.position.set(x, y, z); if (axis === 'z') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.z = Math.PI / 2; parent.add(m); return m; };
+  const tube = (name, mat, pts, r, parent = g, seg = 24, tension = 0.5) => { const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)), false, 'centripetal', tension); const m = new THREE.Mesh(new THREE.TubeGeometry(curve, seg, r, 8, false), mat); m.name = name; parent.add(m); return m; };
+  const torus = (name, mat, r, tr, x, y, z, axis, parent = g) => { const m = new THREE.Mesh(new THREE.TorusGeometry(r, tr, 6, 16), mat); m.name = name; m.position.set(x, y, z); if (axis === 'y') m.rotation.x = Math.PI / 2; if (axis === 'x') m.rotation.y = Math.PI / 2; parent.add(m); return m; };
   const headerFlowPaths = [];
   const displays = [];
   const HR = 0.048;                 // header radius
@@ -176,13 +178,16 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
     return { hoses, localFlowPaths };
   };
 
-  // Interactive rack (row A, x=0): built directly into `g`, unmerged, so `hoses` can still hide per-mesh in the
-  // exploded view — identical to how this was built before the row was extended to every rack.
-  const { hoses, localFlowPaths } = buildRackFixtures(g);
+  // Interactive rack: built directly into its own positioned group, unmerged, so `hoses` can still hide per-mesh
+  // in the exploded view — wherever the rack is actually standing now (it no longer sits at the row-A origin).
+  const liveFixtures = new THREE.Group(); liveFixtures.name = 'interactive_liquid_fixtures';
+  liveFixtures.position.set(liveX, 0, liveZ); liveFixtures.rotation.y = liveRotY; g.add(liveFixtures);
+  const { hoses, localFlowPaths } = buildRackFixtures(liveFixtures);
 
-  // The other nine racks: same construction, built into a scratch group, then baked (matrix applied into the
-  // geometry) and merged per material into a handful of meshes, cloned at each rack's placement. Full per-server
-  // hose detail on every neighbour rack without a per-mesh draw call for each of them.
+  // The ten racks filling both full rows (including the dummy now standing in the interactive rack's old centre
+  // slot): same construction, built into a scratch group, then baked (matrix applied into the geometry) and
+  // merged per material into a handful of meshes, cloned at each rack's placement. Full per-server hose detail
+  // on every rack in the rows without a per-mesh draw call for each of them.
   const scratch = new THREE.Group();
   buildRackFixtures(scratch);
   const buckets = new Map();
@@ -199,11 +204,10 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
   for (const { mat, geos } of buckets.values()) {
     const merged = mergeGeometries(geos, false); geos.forEach((geo) => geo.dispose());
     if (!merged) continue;
-    const m = new THREE.Mesh(merged, mat); m.name = 'rack_liquid_fixture_baked'; m.castShadow = true; m.receiveShadow = true;
+    const m = new THREE.Mesh(merged, mat); m.name = 'rack_liquid_fixture_baked'; m.castShadow = false; m.receiveShadow = false;
     bakedFixtures.push(m);
   }
   for (const row of ['A', 'B']) for (let i = 0; i < ROW_XS.length; i++) {
-    if (row === 'A' && ROW_XS[i] === 0) continue; // interactive rack, built above
     const { x, z, rotY } = rackPlacement(row, i);
     const wrap = new THREE.Group(); wrap.name = `rack_liquid_fixtures_${row}${i}`; wrap.position.set(x, 0, z); wrap.rotation.y = rotY;
     bakedFixtures.forEach((m) => wrap.add(m.clone()));
@@ -261,6 +265,10 @@ export function buildLiquidLoop(THREE, slots, TOP = 0.13 + 42 * 0.04445) {
     const p = new THREE.Points(rackFlowSys.geo, flowMat); p.name = 'coolant_flow_branch'; p.frustumCulled = false; p.userData.thermalSkip = true;
     wrap.add(p); g.add(wrap);
   }
+  // …plus the interactive rack's own coolant flow, wherever it's actually standing now.
+  { const wrap = new THREE.Group(); wrap.name = 'rack_flow_live'; wrap.position.set(liveX, 0, liveZ); wrap.rotation.y = liveRotY;
+    const p = new THREE.Points(rackFlowSys.geo, flowMat); p.name = 'coolant_flow_branch'; p.frustumCulled = false; p.userData.thermalSkip = true;
+    wrap.add(p); g.add(wrap); }
   const headerPts = new THREE.Points(headerFlowSys.geo, flowMat); headerPts.name = 'coolant_flow_header'; headerPts.frustumCulled = false; headerPts.userData.thermalSkip = true; g.add(headerPts);
 
   let lastT = 0, flowLpm = 60, dT = 10, dispAt = -1;

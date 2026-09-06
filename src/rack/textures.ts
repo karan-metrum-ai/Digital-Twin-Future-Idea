@@ -8,7 +8,7 @@ export function createTextures(THREE, U, CW) {
   const tex = (name, w, h, draw, opts) => {
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const ctx = c.getContext('2d'); draw(ctx, w, h);
-    const t = new THREE.CanvasTexture(c); t.name = name; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+    const t = new THREE.CanvasTexture(c); t.name = name; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
     if (opts && opts.repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...opts.repeat); }
     if (opts && opts.linear) t.colorSpace = THREE.NoColorSpace;
     return t;

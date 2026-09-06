@@ -13,10 +13,10 @@ export function buildRackFrame(ctx) {
     box('corner_post', mats.steel, 0.04, TOP - 0.13, 0.04, sx * (W / 2 - 0.02), (TOP + 0.13) / 2, sz * (D / 2 - 0.02));
     const wx = sx * (W / 2 - 0.08), wz = sz * (D / 2 - 0.1);
     box('caster_bracket', mats.steel, 0.04, 0.03, 0.05, wx, 0.06, wz);
-    cyl('caster_wheel', mats.rubber, 0.035, 0.028, wx, 0.035, wz, 'x', g, 24);
-    cyl('caster_hub', mats.screw, 0.012, 0.032, wx, 0.035, wz, 'x', g, 16);
-    cyl('leveling_foot', mats.screw, 0.012, 0.05, sx * (W / 2 - 0.16), 0.045, sz * (D / 2 - 0.06), 'y', g, 16);
-    cyl('leveling_pad', mats.rubber, 0.022, 0.012, sx * (W / 2 - 0.16), 0.006, sz * (D / 2 - 0.06), 'y', g, 16);
+    cyl('caster_wheel', mats.rubber, 0.035, 0.028, wx, 0.035, wz, 'x', g, 10);
+    cyl('caster_hub', mats.screw, 0.012, 0.032, wx, 0.035, wz, 'x', g, 8);
+    cyl('leveling_foot', mats.screw, 0.012, 0.05, sx * (W / 2 - 0.16), 0.045, sz * (D / 2 - 0.06), 'y', g, 8);
+    cyl('leveling_pad', mats.rubber, 0.022, 0.012, sx * (W / 2 - 0.16), 0.006, sz * (D / 2 - 0.06), 'y', g, 8);
   }
   for (const sx of [-1, 1]) box('side_panel', mats.steel, 0.0025, TOP - 0.13, D - 0.08, sx * (W / 2 - 0.001), (TOP + 0.13) / 2, 0);
   for (const sx of [-1, 1]) for (const [z, face] of [[ZF, 1], [-0.36, -1]]) {
