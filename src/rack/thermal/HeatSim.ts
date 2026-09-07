@@ -34,20 +34,20 @@ export function buildHeatSim(THREE, slots, density = 1) {
           if (p < 0.45) {
             float q = p / 0.45;
             pos = vec3(x * (1.0 + (1.0 - q) * 0.6), y + (1.0 - q) * (s3 - 0.5) * 0.08, 0.42 + (1.0 - q) * 0.45);
-            heat = 0.0; alpha = smoothstep(0.0, 0.15, q) * 1.0;
+            heat = 0.0; alpha = smoothstep(0.0, 0.15, q) * 0.9;
           } else {
             float q = clamp((p - 0.55) / 0.45, 0.0, 1.0);
             float wob = sin(uTime * 2.0 + aSeed * 40.0) * 0.02 * q;
             pos = vec3(x * (1.0 + q * 0.5) + wob, y + q * q * 0.9 + q * 0.05, aZr - 0.02 - q * 0.55);
-            heat = 1.0; alpha = (p < 0.55 ? 0.0 : 1.0) * (1.0 - q) * 0.8;
+            heat = 1.0; alpha = (p < 0.55 ? 0.0 : 1.0) * (1.0 - q) * 0.85;
           }
-          gl_PointSize = (4.5 + heat * 2.0) * uPixelRatio;
+          gl_PointSize = (8.0 + heat * 3.0) * uPixelRatio;   // larger, softer motes: readable from the aisle without going dense
         } else {
           // heat haze: large soft blobs rising off the rear exhaust
           float q = p, x = (aSeed - 0.5) * 0.5 + sin(uTime * 0.8 + s4 * 30.0) * 0.06 * q;
           pos = vec3(x, aY + (s2 - 0.5) * aH + q * q * 1.2, aZr - 0.1 - q * 0.5 + sin(uTime + s3 * 20.0) * 0.04);
-          heat = 1.0; alpha = (1.0 - q) * q * 0.22;
-          gl_PointSize = (24.0 + 36.0 * q) * uPixelRatio;
+          heat = 1.0; alpha = (1.0 - q) * q * 0.26;
+          gl_PointSize = (30.0 + 44.0 * q) * uPixelRatio;
         }
         vHeat = heat; vAlpha = alpha;
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
@@ -58,8 +58,8 @@ export function buildHeatSim(THREE, slots, density = 1) {
       varying float vHeat, vAlpha;
       void main() {
         float d = length(gl_PointCoord - 0.5);
-        float soft = smoothstep(0.5, 0.05, d);
-        vec3 cool = vec3(0.45, 0.85, 1.0), hot = vec3(1.0, 0.45, 0.12);
+        float soft = smoothstep(0.5, 0.0, d) * 0.9;  // wide feathered falloff keeps the bigger points light
+        vec3 cool = vec3(0.50, 0.88, 1.0), hot = vec3(1.0, 0.50, 0.15);
         gl_FragColor = vec4(mix(cool, hot, vHeat), soft * vAlpha);
       }`,
   });

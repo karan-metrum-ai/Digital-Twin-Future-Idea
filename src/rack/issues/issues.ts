@@ -38,6 +38,8 @@ export interface RackIssue {
 }
 
 export const LIVE_RACK_ID = 'X-01';
+/** The open issue that the fault patch cable on the interactive rack represents (cleared by the reseat flow). */
+export const FAULT_CABLE_ISSUE_ID = 'INC-4802';
 
 const pad = (i: number) => String(i + 1).padStart(2, '0');
 
@@ -112,6 +114,17 @@ export const DEMO_ISSUES: RackIssue[] = [
       `${ts(25)} ipmi      INFO  Fan1..Fan6 ramped to 100% (14,200 rpm)`,
       `${ts(20)} turbostat INFO  Avg_MHz 1,720 (nominal 2,800) — 38% sustained derate`,
       `${ts(10)} monitor   INFO  Check blanking panels / airflow for X-01; possible recirculation from hot aisle`,
+    ],
+  },
+  {
+    id: 'INC-4802', rackId: 'X-01', u: 39, device: 'sw-x01-core-48p (48-port ToR)', category: 'network', severity: 'major',
+    title: 'Port 9 link down — patch cable unseated', summary: 'RJ45 backed out of Ethernet1/9 on the core switch; app-x01-u13 has lost its primary uplink. Reseat from the top bar.', ageMin: 14,
+    logs: [
+      `${ts(14)} %LINK-3-UPDOWN     Interface Ethernet1/9, changed state to down`,
+      `${ts(14)} %ETHPORT-5-IF_DOWN_LINK_FAILURE  Ethernet1/9 is down (Link failure)`,
+      `${ts(13)} lldpd      WARN  neighbor app-x01-u13 (eth0) aged out on Ethernet1/9`,
+      `${ts(12)} monitor    INFO  Cable test: open pair 1-2 at 0.0 m — connector not seated at switch end`,
+      `${ts(9)}  monitor    INFO  Remediation available: reseat patch cable (INC-4802)`,
     ],
   },
   {

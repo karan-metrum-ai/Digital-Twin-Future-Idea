@@ -28,7 +28,7 @@ export function wireCabling(ctx, { servers, pduOutlets, swA, swB, ppA, ppB, cmA,
     const part = (geo, mat, x, y, z, name) => { const m = new THREE.Mesh(geo, mat); m.name = name + '_' + ctx.nextId(); m.position.set(x, y, z); m.userData.cableRoute = true; plug.add(m); return m; };
     part(new THREE.BoxGeometry(PW, PH, PL), plugMat, 0, 0, 0, 'rj45_housing');
     part(new THREE.BoxGeometry(PW * 0.5, 0.0022, PL * 0.45), plugMat, 0, PH / 2 + 0.0011, -PL * 0.12, 'rj45_latch'); // latch tab on top
-    part(new THREE.BoxGeometry(0.0020, 0.0036, 0.0034), plugMat, 0, PH / 2 + 0.0028, PL * 0.28, 'rj45_latch_tail');
+    const latchTail = part(new THREE.BoxGeometry(0.0020, 0.0036, 0.0034), plugMat, 0, PH / 2 + 0.0028, PL * 0.28, 'rj45_latch_tail');
     for (let i = 0; i < 8; i++) {
       const x = -PW / 2 + 0.0015 + i * ((PW - 0.003) / 7);
       part(new THREE.BoxGeometry(0.0005, 0.0030, 0.0038), contactMat, x, -PH / 2 + 0.0019, -PL / 2 + 0.0022, 'rj45_contact'); // gold fingers at the nose
@@ -38,19 +38,34 @@ export function wireCabling(ctx, { servers, pduOutlets, swA, swB, ppA, ppB, cmA,
     g.add(plug); plug.updateMatrix();
     const rear = new THREE.Vector3(0, 0, PL / 2 + BOOT).applyMatrix4(plug.matrix);       // where the cable leaves the boot
     const axis = new THREE.Vector3(0, 0, 1).transformDirection(plug.matrix);              // plug's rearward direction
-    return { plug, rear, axis };
+    // Poses for the reseat animation: where it hangs now, and where it sits once pushed home (nose ~9 mm into the jack, square to the face).
+    const unseated = { pos: plug.position.clone(), rot: plug.rotation.clone() };
+    const seated = { pos: new THREE.Vector3(p.x, p.y, p.z + PL / 2 - 0.009), rot: new THREE.Euler(0, 0, 0) };
+    return { plug, rear, axis, latchTail, unseated, seated, PL, BOOT };
   };
   const frontPatch = (sw, pp, cmY, mat, count, step, faultAt = -1) => {
     for (let i = 0; i < count; i++) {
       const p = sw.ports[i * step], q = pp.pts[i * 2];
       const route = [[(p.x + q.x) / 2, cmY + 0.003, p.z + 0.05], [q.x, pp.yc + 0.012, p.z + 0.03], [q.x, q.y, q.z]];
       if (i !== faultAt) { tube('patch_cable', mat, [[p.x, p.y, p.z], [p.x, p.y + 0.004, p.z + 0.045], ...route], 0.003); continue; }
-      const { plug, rear, axis } = buildUnseatedPlug(p);
-      const lead = rear.clone().addScaledVector(axis, 0.015);
+      const { plug, latchTail, unseated, seated, PL, BOOT } = buildUnseatedPlug(p);
+      const routeV = route.map((r) => new THREE.Vector3(...r));
       // Own tube (not ctx.tube) so no second boot gets stamped at the cable start — the plug already carries one.
-      const curve = new THREE.CatmullRomCurve3([rear, lead, new THREE.Vector3(p.x + 0.006, p.y - 0.004, p.z + 0.07), ...route.map((r) => new THREE.Vector3(...r))]);
-      const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.003, 6, false), faultMat); m.name = 'patch_cable_disconnected_' + ctx.nextId(); m.userData.cableRoute = true; g.add(m);
-      g.userData.faultCable = { mesh: m, material: faultMat, plug, plugMaterial: plugMat, port: { x: p.x, y: p.y, z: p.z } };
+      // The cable is re-meshed from the plug's current transform, so it follows the connector as it is pushed home.
+      const m = new THREE.Mesh(new THREE.BufferGeometry(), faultMat); m.name = 'patch_cable_disconnected_' + ctx.nextId(); m.userData.cableRoute = true; g.add(m);
+      const rebuild = () => {
+        plug.updateMatrix();
+        const rear = new THREE.Vector3(0, 0, PL / 2 + BOOT).applyMatrix4(plug.matrix);
+        const axis = new THREE.Vector3(0, 0, 1).transformDirection(plug.matrix);
+        const lead = rear.clone().addScaledVector(axis, 0.015);
+        // Seated, the slack that used to hang below the port lifts into the same arc the neighbouring cables take.
+        const seatAmt = THREE.MathUtils.clamp(1 - (plug.position.z - seated.pos.z) / (unseated.pos.z - seated.pos.z), 0, 1);
+        const knee = new THREE.Vector3(p.x + 0.006 * (1 - seatAmt), p.y - 0.004 + 0.008 * seatAmt, p.z + 0.07 - 0.025 * seatAmt);
+        const curve = new THREE.CatmullRomCurve3([rear, lead, knee, ...routeV]);
+        const geo = new THREE.TubeGeometry(curve, 24, 0.003, 6, false); m.geometry.dispose(); m.geometry = geo;
+      };
+      rebuild();
+      g.userData.faultCable = { mesh: m, material: faultMat, plug, plugMaterial: plugMat, latchTail, unseated, seated, rebuild, seatedColor: mats.cableBlue.color.clone(), port: { x: p.x, y: p.y, z: p.z } };
     }
   };
   frontPatch(swA, ppA, cmA, mats.cableBlue, 6, 4, FAULT_INDEX);

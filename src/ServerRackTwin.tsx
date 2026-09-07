@@ -20,15 +20,17 @@ import { LiquidHud } from './rack/liquid/LiquidHud';
 import { IssuePanel } from './rack/issues/IssuePanel';
 import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
 import { buildRackFocus, pickRackId, rackFocusPose } from './rack/issues/RackFocus';
+import { createReseatAnimation } from './rack/cabling/reseatAnimation';
 import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
-import type { Slot, RackView, ServerRackTwinProps } from './rack/types';
+import type { Slot, RackView, ServerRackTwinProps, SwitchFixPhase } from './rack/types';
 
-export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity } from './rack/types';
-export { DEMO_ISSUES, RACKS, LIVE_RACK_ID } from './rack/issues/issues';
+export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity, SwitchFixPhase } from './rack/types';
+export { DEMO_ISSUES, RACKS, LIVE_RACK_ID, FAULT_CABLE_ISSUE_ID } from './rack/issues/issues';
+export { requestRemediation } from './rack/issues/remediationApi';
 export { Playground } from './rack/Playground';
 
 /* ------------------------------------------------------------------ component ------------------------------------------------------------------ */
-export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, showIssues = true, selectedRack, onSelectRack, background = '#16171b', className, style }: ServerRackTwinProps) {
+export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, showIssues = true, selectedRack, onSelectRack, switchFix = 'idle', onSwitchFixDone, background = '#16171b', className, style }: ServerRackTwinProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [internalView, setInternalView] = useState<RackView>('visual');
@@ -47,6 +49,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   };
   const pickRef = useRef(selectRack); pickRef.current = selectRack;
   const issuesRef = useRef(issues); issuesRef.current = issues;
+  const fixDoneRef = useRef(onSwitchFixDone); fixDoneRef.current = onSwitchFixDone;
 
   useEffect(() => {
     const host = hostRef.current; if (!host) return;
@@ -114,7 +117,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const fit = () => { const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
     fit(); const ro = new ResizeObserver(fit); ro.observe(host);
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
-    const faultCable: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; plugMaterial: THREE.MeshStandardMaterial } | undefined = rack.userData.faultCable;
+    const faultCable: any = rack.userData.faultCable;
+    const reseat = faultCable ? createReseatAnimation(THREE, faultCable) : null;
     const explodeItems: any[] = rack.userData.items; const doors: any = rack.userData.doors;
 
     // Name tags for the exploded view: one canvas-text sprite per item, parented to the item's group so it
@@ -221,7 +225,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       focus.userData.tick(t);
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
       // Disconnected patch cable: sharp red 'beep' (fast rise, quick decay) rather than a soft sine, so it reads as an alarm.
-      if (faultCable) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; }
+      if (reseat) { reseat.tick(t); if (reseat.pulsing) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; } }
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
       if (fly) {
         const u = Math.min(1, (performance.now() / 1000 - fly.start) / fly.dur), e = easeInOut(u);
@@ -267,6 +271,25 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         explodeVal = t; updateDoorTargets();
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
+      /**
+       * Remediation of the unseated patch cable. 'requested': open the door and fly to a close view of the switch
+       * port (camera stays on the rack's right so the swinging door never crosses the lens). 'confirmed': play the
+       * staged reseat and report completion. 'done': seated immediately (e.g. mounted after the fix). 'idle': fault live.
+       */
+      setSwitchFix(phase: SwitchFixPhase) {
+        if (!faultCable || !reseat) return;
+        if (phase === 'idle') { reseat.reset(); return; }
+        if (phase === 'done') { reseat.seatNow(); return; }
+        if (phase === 'requested' || phase === 'confirmed') {
+          doorOpen = true; updateDoorTargets(); pickRef.current(LIVE_RACK_ID);
+          const tgt = rack.localToWorld(new THREE.Vector3(faultCable.port.x, faultCable.port.y, faultCable.port.z));
+          const fwd = new THREE.Vector3(0, 0, 1).transformDirection(rack.matrixWorld), right = new THREE.Vector3(1, 0, 0).transformDirection(rack.matrixWorld);
+          const pos = tgt.clone().addScaledVector(fwd, 0.62).addScaledVector(right, 0.22); pos.y += 0.07;
+          flyTo(pos.toArray() as [number, number, number], tgt.toArray() as [number, number, number]);
+        }
+        if (phase === 'confirmed') reseat.start((performance.now() - t0) / 1000 + 0.9, () => fixDoneRef.current?.()); // let the door finish opening first
+      },
+      switchFixState() { return reseat ? reseat.state : 'none'; },
       /** Outline rack `id` (null clears) and, when `flyCamera`, fly to its front three-quarter. */
       selectRack(id: string | null, flyCamera = true) { selectRackInScene(id, flyCamera); },
       /** Replace the open-issue list — rebuilds the alarm badges floating over the racks. */
@@ -303,6 +326,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   useEffect(() => { apiRef.current?.setAirflow(showAirflow); }, [showAirflow]);
   useEffect(() => { if (temps) apiRef.current?.setTemps(temps); }, [temps]);
   useEffect(() => { apiRef.current?.selectRack(sel, true); }, [sel]);
+  useEffect(() => { apiRef.current?.setSwitchFix(switchFix); }, [switchFix]);
   useEffect(() => { apiRef.current?.setIssues(issues); }, [issues]);
 
   const thermalOn = v === 'thermal', liquidOn = v === 'liquid';

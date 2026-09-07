@@ -33,8 +33,8 @@ export function buildCoolingVapor(THREE, density = 1) {
         float x = x0 * (1.0 - rise * 0.35) + sin(uTime * 0.7 + aSeed * 30.0) * 0.015 * (1.0 - rise);
         float z = mix(z0, 0.365, rise);                         // pulled forward off the grill and just past the bezel
         vec3 pos = vec3(x, y, z);
-        vAlpha = smoothstep(0.0, 0.12, p) * smoothstep(1.0, 0.7, p) * 0.4;
-        gl_PointSize = (4.0 + 4.0 * s4) * uPixelRatio;
+        vAlpha = smoothstep(0.0, 0.12, p) * smoothstep(1.0, 0.7, p) * 0.5;
+        gl_PointSize = (7.0 + 6.0 * s4) * uPixelRatio;
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
         gl_PointSize *= 1.6 / -mv.z;
         gl_Position = projectionMatrix * mv;
@@ -43,7 +43,7 @@ export function buildCoolingVapor(THREE, density = 1) {
       varying float vAlpha;
       void main() {
         float d = length(gl_PointCoord - 0.5);
-        float soft = smoothstep(0.5, 0.05, d);
+        float soft = smoothstep(0.5, 0.0, d) * 0.9;
         vec3 col = vec3(0.35, 0.75, 1.0);
         gl_FragColor = vec4(col, soft * vAlpha);
       }`,

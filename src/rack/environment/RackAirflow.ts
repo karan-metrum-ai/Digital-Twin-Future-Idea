@@ -12,7 +12,7 @@ import { buildHeatSim } from '../thermal/HeatSim';
 import { buildCoolingVapor } from '../thermal/CoolingVapor';
 import { buildCoolingFloor } from './CoolingFloor';
 
-const REPLICA_DENSITY = 0.15; // fraction of the interactive rack's particle count, per replica
+const REPLICA_DENSITY = 0.25; // fraction of the interactive rack's particle count, per replica (still ~3.5k points across all ten)
 
 export function buildRackAirflowReplicas(THREE, slots) {
   const group = new THREE.Group(); group.name = 'rack_airflow_replicas';
