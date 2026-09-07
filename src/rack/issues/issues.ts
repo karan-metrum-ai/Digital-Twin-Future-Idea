@@ -162,45 +162,6 @@ export const DEMO_ISSUES: RackIssue[] = [
   },
 ];
 
-/** Rack device inventory — devices present in each rack (same for all racks; X-01 is the reference). */
-export interface RackDevice {
-  u: number;
-  height: number;
-  name: string;
-  type: string;
-}
-
-export const RACK_DEVICES: RackDevice[] = [
-  { u: 1, height: 4, name: 'stor-u01 (Storage)', type: 'storage' },
-  { u: 5, height: 1, name: 'blank-u05', type: 'blank' },
-  { u: 6, height: 3, name: 'stor-u06 (Storage)', type: 'storage' },
-  { u: 9, height: 2, name: 'app-u09 (SFF Server)', type: 'compute' },
-  { u: 11, height: 2, name: 'app-u11 (LFF Server)', type: 'compute' },
-  { u: 13, height: 1, name: 'app-u13', type: 'compute' },
-  { u: 14, height: 1, name: 'app-u14', type: 'compute' },
-  { u: 15, height: 1, name: 'app-u15', type: 'compute' },
-  { u: 16, height: 1, name: 'app-u16', type: 'compute' },
-  { u: 17, height: 2, name: 'app-u17 (SFF)', type: 'compute' },
-  { u: 19, height: 1, name: 'blank-u19', type: 'blank' },
-  { u: 20, height: 4, name: 'gpu-u20 (GPU Node)', type: 'compute' },
-  { u: 24, height: 1, name: 'app-u24', type: 'compute' },
-  { u: 25, height: 1, name: 'app-u25', type: 'compute' },
-  { u: 26, height: 1, name: 'app-u26', type: 'compute' },
-  { u: 27, height: 1, name: 'app-u27', type: 'compute' },
-  { u: 28, height: 2, name: 'app-u28 (SFF)', type: 'compute' },
-  { u: 30, height: 1, name: 'pdu-h-u30 (Horizontal)', type: 'power' },
-  { u: 31, height: 1, name: 'app-u31', type: 'compute' },
-  { u: 32, height: 1, name: 'app-u32', type: 'compute' },
-  { u: 33, height: 1, name: 'app-u33', type: 'compute' },
-  { u: 34, height: 1, name: 'pp-u34 (Patch Panel)', type: 'network' },
-  { u: 35, height: 1, name: 'cm-u35 (Cable Mgr)', type: 'network' },
-  { u: 36, height: 1, name: 'sw-u36-24p (Switch)', type: 'network' },
-  { u: 37, height: 1, name: 'pp-u37 (Patch Panel)', type: 'network' },
-  { u: 38, height: 1, name: 'cm-u38 (Cable Mgr)', type: 'network' },
-  { u: 39, height: 1, name: 'sw-u39-48p (Switch)', type: 'network' },
-  { u: 40, height: 3, name: 'nuc-u40 (NUC Shelf)', type: 'compute' },
-];
-
 export function issuesForRack(issues: RackIssue[], rackId: string) {
   return issues.filter((i) => i.rackId === rackId).sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
 }

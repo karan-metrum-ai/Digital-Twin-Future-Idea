@@ -18,7 +18,6 @@ import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
 import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
 import { LiquidHud } from './rack/liquid/LiquidHud';
 import { IssuePanel } from './rack/issues/IssuePanel';
-import { RackInfoHUD } from './rack/issues/RackInfoHUD';
 import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
 import { buildRackFocus, pickRackId, rackFocusPose } from './rack/issues/RackFocus';
 import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
@@ -115,6 +114,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const fit = () => { const w = host.clientWidth || 1, h = host.clientHeight || 1; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
     fit(); const ro = new ResizeObserver(fit); ro.observe(host);
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
+    const faultCable: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; plugMaterial: THREE.MeshStandardMaterial } | undefined = rack.userData.faultCable;
     const explodeItems: any[] = rack.userData.items; const doors: any = rack.userData.doors;
 
     // Name tags for the exploded view: one canvas-text sprite per item, parented to the item's group so it
@@ -220,6 +220,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       }
       focus.userData.tick(t);
       if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
+      // Disconnected patch cable: sharp red 'beep' (fast rise, quick decay) rather than a soft sine, so it reads as an alarm.
+      if (faultCable) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; }
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
       if (fly) {
         const u = Math.min(1, (performance.now() / 1000 - fly.start) / fly.dur), e = easeInOut(u);
@@ -336,7 +338,6 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
-      <RackInfoHUD selectedRackId={sel} />
       {showIssues && <IssuePanel issues={issues} selectedRackId={sel} openIssueId={openIssueId} onSelectRack={selectRack} onOpenIssue={setOpenIssueId} />}
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
