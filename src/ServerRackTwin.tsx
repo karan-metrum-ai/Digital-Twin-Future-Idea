@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildRack } from './rack/buildRack';
 import { buildEnvironment, ROOM_BOUNDS } from './rack/environment/Environment';
+import { buildOverheadCabling } from './rack/environment/OverheadCabling';
 import { buildRackReplicas, LIVE_RACK_PLACEMENT } from './rack/environment/RackRow';
 import { buildRackAirflowReplicas } from './rack/environment/RackAirflow';
 import { buildEnvMap } from './rack/environment/EnvironmentMap';
@@ -85,6 +86,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     // Rack footprint (still at the origin) — the selection outline is sized from it and re-posed onto whichever rack is picked.
     const rackBox = new THREE.Box3().setFromObject(rack);
     scene.add(buildEnvironment(THREE));
+    // Overhead cable-tray / wire-framing grid hung off the roof above both rows (static, merged per material).
+    const overhead = buildOverheadCabling(THREE); disableShadows(overhead); scene.add(overhead);
     // Selection outline + per-rack alarm badges for the issues panel; rack picking maps clicks back to rack ids.
     const focus = buildRackFocus(THREE, rackBox, issuesRef.current); scene.add(focus);
     // Heat simulation + cold-air vapour for the ten racks in the rows — same intake/exhaust particle sim and
@@ -162,7 +165,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     // camera travels a quadratic arc whose apex sits above the rack tops, so a move between racks lifts over the
     // rows instead of cutting straight through them, and both position and orbit target ease in/out over a fixed
     // duration. Any orbit drag cancels it.
-    const ARC_CLEAR_Y = 3.4; // rack tops are ~2.1 m; overhead coolant headers sit below this too
+    const ARC_CLEAR_Y = 4.1; // rack tops are ~2.1 m, coolant headers ~2.5 m, and the overhead cable-tray frame tops out at ~3.7 m
     let fly: { p0: THREE.Vector3; p1: THREE.Vector3; p2: THREE.Vector3; t0: THREE.Vector3; t1: THREE.Vector3; start: number; dur: number } | null = null;
     const flyTo = (pos: [number, number, number], tgt: [number, number, number]) => {
       const p0 = camera.position.clone(), p2 = clampToRoom(new THREE.Vector3(...pos));

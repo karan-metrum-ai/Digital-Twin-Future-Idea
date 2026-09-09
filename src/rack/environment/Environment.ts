@@ -1,7 +1,7 @@
 // @ts-nocheck
 /* eslint-disable */
 // Contained data-hall room: raised-floor tiles, four walls + roof sized around the two rack rows,
-// overhead ladder + lights. ROOM_BOUNDS is shared with the camera so orbit never leaves the enclosure.
+// ceiling lights (the overhead cable-tray frame is built separately in OverheadCabling.ts). ROOM_BOUNDS is shared with the camera so orbit never leaves the enclosure.
 
 /** Inner clear volume the camera must stay inside (metres). Matches the wall/roof geometry below. */
 export const ROOM_BOUNDS = {
@@ -12,7 +12,7 @@ export const ROOM_BOUNDS = {
 
 const ROOM_W = ROOM_BOUNDS.maxX - ROOM_BOUNDS.minX;
 const ROOM_D = ROOM_BOUNDS.maxZ - ROOM_BOUNDS.minZ;
-const ROOM_H = 5.7;
+export const ROOM_H = 5.7;
 const ROOM_CX = (ROOM_BOUNDS.minX + ROOM_BOUNDS.maxX) / 2;
 const ROOM_CZ = (ROOM_BOUNDS.minZ + ROOM_BOUNDS.maxZ) / 2;
 
@@ -58,9 +58,7 @@ export function buildEnvironment(THREE) {
     t.name = 'room_baseboard'; t.position.set(x, 0.05, z); e.add(t);
   }
 
-  // Overhead cable ladder: one run above each row's front and one above the hot aisle between the rows.
-  const ladder = new THREE.MeshLambertMaterial({ color: 0x3a3c40 });
-  for (const z of [0.3, -1.135, -2.57]) { const l = new THREE.Mesh(new THREE.BoxGeometry(8, 0.03, 0.3), ladder); l.position.set(0, 4.2, z); e.add(l); }
+  // Overhead cable trays / wire framing live in OverheadCabling.ts (added to the scene alongside this group).
   const lamp = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xe8eefc, emissiveIntensity: 1.5 });
   for (const z of [1.6, -1.135, -3.2]) { const l = new THREE.Mesh(new THREE.BoxGeometry(7, 0.04, 0.12), lamp); l.position.set(0, 5.2, z); e.add(l); }
   return e;
