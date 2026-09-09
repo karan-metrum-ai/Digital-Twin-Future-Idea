@@ -16,13 +16,11 @@ export interface RackItemMeta {
 }
 
 export interface ServerRackTwinProps {
-  /** Open issues to list in the side panel and badge over racks; defaults to the built-in demo set. */
+  /** Open issues to mark on the racks; defaults to the built-in demo set. */
   issues?: RackIssue[];
-  /** Hide the open-issues panel (badges and rack selection still work). */
-  showIssues?: boolean;
   /** Controlled rack selection (rack id, e.g. "A-03"; null = none). Uncontrolled when omitted. */
   selectedRack?: string | null;
-  /** Fires when a rack is picked in the scene or from the issues panel (null when the selection is cleared). */
+  /** Fires when a rack is picked in the scene (null when the selection is cleared). */
   onSelectRack?: (id: string | null) => void;
   /**
    * 'requested' flies the camera to the switch and opens the front door (remediation API call in flight);

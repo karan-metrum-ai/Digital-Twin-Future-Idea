@@ -18,7 +18,6 @@ import { buildCoolingVapor } from './rack/thermal/CoolingVapor';
 import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
 import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
 import { LiquidHud } from './rack/liquid/LiquidHud';
-import { IssuePanel } from './rack/issues/IssuePanel';
 import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
 import { buildRackFocus, pickRackId, rackFocusPose } from './rack/issues/RackFocus';
 import { createReseatAnimation } from './rack/cabling/reseatAnimation';
@@ -31,7 +30,7 @@ export { requestRemediation } from './rack/issues/remediationApi';
 export { Playground } from './rack/Playground';
 
 /* ------------------------------------------------------------------ component ------------------------------------------------------------------ */
-export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, showIssues = true, selectedRack, onSelectRack, switchFix = 'idle', onSwitchFixDone, background = '#16171b', className, style }: ServerRackTwinProps) {
+export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, selectedRack, onSelectRack, switchFix = 'idle', onSwitchFixDone, background = '#16171b', className, style }: ServerRackTwinProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [internalView, setInternalView] = useState<RackView>('visual');
@@ -41,13 +40,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   // Rack selection: controlled via `selectedRack` when provided, otherwise internal. Picks made inside the 3D
   // scene come back through `pickRef` so the render-loop closure never has to see React state.
   const [internalSel, setInternalSel] = useState<string | null>(null);
-  const [openIssueId, setOpenIssueId] = useState<string | null>(null);
   const sel = selectedRack !== undefined ? selectedRack : internalSel;
-  const selectRack = (id: string | null) => {
-    setInternalSel(id); onSelectRack?.(id);
-    // An open log excerpt only makes sense while its own rack is the selected one.
-    setOpenIssueId((open) => (open && id && issues.find((i) => i.id === open)?.rackId === id ? open : null));
-  };
+  const selectRack = (id: string | null) => { setInternalSel(id); onSelectRack?.(id); };
   const pickRef = useRef(selectRack); pickRef.current = selectRack;
   const issuesRef = useRef(issues); issuesRef.current = issues;
   const fixDoneRef = useRef(onSwitchFixDone); fixDoneRef.current = onSwitchFixDone;
@@ -88,7 +82,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     scene.add(buildEnvironment(THREE));
     // Overhead cable-tray / wire-framing grid hung off the roof above both rows (static, merged per material).
     const overhead = buildOverheadCabling(THREE); disableShadows(overhead); scene.add(overhead);
-    // Selection outline + per-rack alarm badges for the issues panel; rack picking maps clicks back to rack ids.
+    // On-rack alarm plates/beacons + door-hairline selection for the issues panel; rack picking maps clicks back to rack ids.
     const focus = buildRackFocus(THREE, rackBox, issuesRef.current); scene.add(focus);
     // Heat simulation + cold-air vapour for the ten racks in the rows — same intake/exhaust particle sim and
     // floor grille as the interactive rack, instanced at each rack's placement (including the now-dummy centre slot).
@@ -188,7 +182,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const pointerNdc = new THREE.Vector2();
     const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
     const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
-    // Which rack (if any) is under the pointer — any of the ten replicas, the interactive rack, or an alarm badge.
+    // Which rack (if any) is under the pointer — any of the ten replicas, the interactive rack, or an alarm plate/beacon.
     const rackUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickRackId(raycaster, focus, replicas, rack, LIVE_RACK_ID) as string | null; };
     // Select a rack: outline it and (optionally) fly the camera to its front three-quarter.
     const selectRackInScene = (id: string | null, flyCamera: boolean) => {
@@ -295,7 +289,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       switchFixState() { return reseat ? reseat.state : 'none'; },
       /** Outline rack `id` (null clears) and, when `flyCamera`, fly to its front three-quarter. */
       selectRack(id: string | null, flyCamera = true) { selectRackInScene(id, flyCamera); },
-      /** Replace the open-issue list — rebuilds the alarm badges floating over the racks. */
+      /** Replace the open-issue list — rebuilds the alarm plates and roof beacons on the racks. */
       setIssues(list: any[]) { focus.userData.setIssues(list); },
       selectedRack() { return focus.userData.selectedId as string | null; },
       cameraPos() { return camera.position.toArray(); },
@@ -365,7 +359,6 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
-      {showIssues && <IssuePanel issues={issues} selectedRackId={sel} openIssueId={openIssueId} onSelectRack={selectRack} onOpenIssue={setOpenIssueId} />}
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
         <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
