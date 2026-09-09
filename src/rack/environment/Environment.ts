@@ -6,13 +6,13 @@
 /** Inner clear volume the camera must stay inside (metres). Matches the wall/roof geometry below. */
 export const ROOM_BOUNDS = {
   minX: -8.3, maxX: 8.6,
-  minY: 0.12, maxY: 5.3,
+  minY: 0.12, maxY: 4.3,
   minZ: -8.5, maxZ: 7.7,
 };
 
 const ROOM_W = ROOM_BOUNDS.maxX - ROOM_BOUNDS.minX;
 const ROOM_D = ROOM_BOUNDS.maxZ - ROOM_BOUNDS.minZ;
-export const ROOM_H = 5.7;
+export const ROOM_H = 4.7;
 const ROOM_CX = (ROOM_BOUNDS.minX + ROOM_BOUNDS.maxX) / 2;
 const ROOM_CZ = (ROOM_BOUNDS.minZ + ROOM_BOUNDS.maxZ) / 2;
 
@@ -60,6 +60,6 @@ export function buildEnvironment(THREE) {
 
   // Overhead cable trays / wire framing live in OverheadCabling.ts (added to the scene alongside this group).
   const lamp = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xe8eefc, emissiveIntensity: 1.5 });
-  for (const z of [1.6, -1.135, -3.2]) { const l = new THREE.Mesh(new THREE.BoxGeometry(7, 0.04, 0.12), lamp); l.position.set(0, 5.2, z); e.add(l); }
+  for (const z of [1.6, -1.135, -3.2]) { const l = new THREE.Mesh(new THREE.BoxGeometry(7, 0.04, 0.12), lamp); l.position.set(0, ROOM_H - 0.5, z); e.add(l); }
   return e;
 }
