@@ -26,8 +26,20 @@ export function rackPlacement(row, i) {
   return row === 'A' ? { x: ROW_XS[i], z: ROW_A_Z, rotY: 0 } : { x: -ROW_XS[i], z: ROW_B_Z, rotY: Math.PI };
 }
 
+// Same "fully open" swing used for the interactive rack's front door (see ServerRackTwin's updateDoorTargets,
+// frontAmt=1 -> hingeClosedY + DOOR_OPEN_SWING) — kept in sync there so a replica's baked-open door matches how
+// the interactive rack looks once its own door is opened.
+const DOOR_OPEN_SWING = 4.27;
+
 export function buildRackReplicas(THREE, rack) {
   const group = new THREE.Group(); group.name = 'rack_replicas';
+  // Bake every row rack with its front door already swung open, so the whole data hall reads with cabling and
+  // hardware visible through the doorway rather than behind a closed perforated door — these are static replicas
+  // with no click-to-open interaction of their own, so "open" has to be their baked, permanent state. The
+  // interactive rack (`rack`) is reused as-is afterwards, so its own hinge rotation is restored once baking is done.
+  const doors = rack.userData.doors;
+  const savedHingeY = doors?.hinge.rotation.y;
+  if (doors) doors.hinge.rotation.y = doors.hingeClosedY + DOOR_OPEN_SWING;
   rack.updateMatrixWorld(true);
   // Bake the rack into one geometry per (material, attribute layout).
   const buckets = new Map();
@@ -64,5 +76,7 @@ export function buildRackReplicas(THREE, rack) {
     copy.position.set(x, 0, z); copy.rotation.y = rotY;
     group.add(copy);
   }
+  // Put the interactive rack's own door back to closed — the bake above only borrowed its open pose.
+  if (doors) { doors.hinge.rotation.y = savedHingeY; rack.updateMatrixWorld(true); }
   return group;
 }

@@ -26,12 +26,17 @@ export function rackFocusPose(info) {
   // Racks face +z at rotY = 0; rotating about y turns that forward vector to (sin, 0, cos).
   const fx = Math.sin(info.rotY), fz = Math.cos(info.rotY);
   const rx = Math.cos(info.rotY), rz = -Math.sin(info.rotY); // rack's right-hand side
-  const ox = fx * 3.4 + rx * 1.7, oz = fz * 3.4 + rz * 1.7;  // camera offset from the rack, in plan
-  const pos = [info.x + ox, 2.15, info.z + oz];
+  // Tighter than a full-rack establishing shot: close enough to read the alarm card text and the patch-cable
+  // runs, not just recognise the rack.
+  const ox = fx * 2.3 + rx * 1.15, oz = fz * 2.3 + rz * 1.15;  // camera offset from the rack, in plan
+  const pos = [info.x + ox, 1.86, info.z + oz];
   // Camera-right in plan is perpendicular to the view direction (-ox, -oz): (oz, -ox) normalised. Moving the orbit
-  // target toward camera-RIGHT shifts the scene left on screen, so the rack clears the issues panel on the right.
+  // target toward camera-RIGHT shifts the scene left on screen, so the rack clears the issue detail modal on the
+  // right edge if one is open.
   const len = Math.hypot(ox, oz), crx = oz / len, crz = -ox / len;
-  const tgt = [info.x + fx * 0.1 + crx * 0.5, 1.15, info.z + fz * 0.1 + crz * 0.5];
+  // Aimed high in the rack's U-span (patch panels, cable managers and the overhead header drops all live up here)
+  // rather than rack-centre, so the cabling is what's centred in frame, not blank chassis.
+  const tgt = [info.x + fx * 0.1 + crx * 0.42, 1.64, info.z + fz * 0.1 + crz * 0.42];
   return { pos, tgt };
 }
 
@@ -111,6 +116,31 @@ export function buildRackFocus(THREE, rackBox, issues) {
   }
   g.add(outline);
 
+  // Nameplate: a small ID card standing on top of every rack (issues or not) so racks are identifiable from
+  // across the hall without clicking each one — a billboard sprite, so it reads at any orbit angle. Built once;
+  // RACKS is static, unlike the alarm plates/beacons which rebuild whenever the issue list changes.
+  const NP_W = 0.28, NP_PX_W = 320, NP_PX_H = 96;
+  const makeNameplateTexture = (label, selected) => {
+    const c = document.createElement('canvas'); c.width = NP_PX_W; c.height = NP_PX_H; const x = c.getContext('2d');
+    x.beginPath(); x.roundRect(2, 2, NP_PX_W - 4, NP_PX_H - 4, 18);
+    x.fillStyle = 'rgba(9,10,13,0.82)'; x.fill();
+    x.strokeStyle = selected ? SELECT_COLOR : 'rgba(255,255,255,0.30)'; x.lineWidth = selected ? 4 : 2.5; x.stroke();
+    x.fillStyle = selected ? '#cfe6ff' : '#eef0f4'; x.font = `700 44px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(label, NP_PX_W / 2, NP_PX_H / 2 + 2);
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; return tex;
+  };
+  const nameplates = []; // { sprite, rackId }
+  for (const info of RACKS) {
+    const grp = rackGroup(info);
+    const sp = skip(new THREE.Sprite(new THREE.SpriteMaterial({ map: makeNameplateTexture(info.id, false), transparent: true, depthTest: false, toneMapped: false })));
+    sp.name = `rack_nameplate_${info.id}`; sp.userData.rackId = info.id; sp.renderOrder = 15;
+    sp.scale.set(NP_W, NP_W * (NP_PX_H / NP_PX_W), 1);
+    // Local Y is unaffected by the group's yaw, so this sits directly above the roof regardless of rack facing.
+    sp.position.set(0, ROOF_Y + 0.16, D / 2 - 0.06);
+    grp.add(sp);
+    nameplates.push({ sprite: sp, rackId: info.id });
+  }
+
   let list = issues, selectedId = null;
   const plates = [];   // { mesh, rackId, severity }
   const beacons = [];  // { mesh, halo, rackId, severity }
@@ -157,6 +187,16 @@ export function buildRackFocus(THREE, rackBox, issues) {
     const info = selectedId ? RACK_BY_ID[selectedId] : null;
     if (info) { const grp = rackGroup(info); if (outline.parent !== grp) grp.add(outline); outline.visible = true; }
     else outline.visible = false;
+    // Redraw each nameplate only when its selected state actually flips, so the other ten don't churn a canvas
+    // texture on every pick.
+    for (const np of nameplates) {
+      const sel = np.rackId === selectedId;
+      if (np.selected === sel) continue;
+      np.selected = sel;
+      np.sprite.material.map?.dispose();
+      np.sprite.material.map = makeNameplateTexture(np.rackId, sel);
+      np.sprite.scale.set(sel ? NP_W * 1.15 : NP_W, (sel ? NP_W * 1.15 : NP_W) * (NP_PX_H / NP_PX_W), 1);
+    }
   };
   rebuild();
 
@@ -174,7 +214,7 @@ export function buildRackFocus(THREE, rackBox, issues) {
   };
 
   /** Objects a click should test first — the plates and beacons sit proud of the rack surfaces. */
-  const pickables = () => pickable;
+  const pickables = () => [...pickable, ...nameplates.map((np) => np.sprite)];
 
   g.userData = { select, setIssues, tick, pickables, get selectedId() { return selectedId; } };
   return g;

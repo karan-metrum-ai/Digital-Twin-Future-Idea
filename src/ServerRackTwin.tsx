@@ -148,15 +148,19 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       return labels;
     };
 
-    // Front door: closed by default, click to swing it open (click again to close). Combines with the
-    // exploded-view slider via `updateDoorTargets` — either one can hold the door open.
-    let explodeVal = 0, doorOpen = false, liquidMode = false;
+    // Front door: open by default (and re-forced open whenever this rack is selected/focused — see
+    // selectRackInScene) so its cabling and hardware are always visible, matching the data-center rows' racks
+    // (baked open — see RackRow.ts). Still click-toggleable for anyone who wants the closed look. Combines with
+    // the exploded-view slider via `updateDoorTargets` — either one can hold the door open.
+    let explodeVal = 0, doorOpen = true, liquidMode = false;
     const updateDoorTargets = () => {
       if (!doors) return;
       const frontAmt = Math.max(explodeVal, doorOpen ? 1 : 0);
       doors.hingeTargetY = doors.hingeClosedY + frontAmt * 4.27; // swings anticlockwise (viewed from above) away from the rack
       doors.rdTargetZ = doors.rdClosedZ - Math.max(explodeVal, liquidMode ? 1 : 0) * 0.5; // rear door also slides off in liquid mode to expose the manifolds
     };
+    updateDoorTargets();
+    if (doors) doors.hinge.rotation.y = doors.hingeTargetY; // start open immediately, no swing-in animation on load
     // Camera fly-to (rack focus, and liquid mode's rear three-quarter view where the manifolds and CDU read). The
     // camera travels a quadratic arc whose apex sits above the rack tops, so a move between racks lifts over the
     // rows instead of cutting straight through them, and both position and orbit target ease in/out over a fixed
@@ -191,6 +195,9 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const selectRackInScene = (id: string | null, flyCamera: boolean) => {
       focus.userData.select(id);
       const info = id ? RACK_BY_ID[id] : null;
+      // Focusing the interactive rack always reopens its door, so whatever drew the eye there (an alarm card,
+      // a plain click) is never hidden behind it.
+      if (id === LIVE_RACK_ID && !doorOpen) { doorOpen = true; updateDoorTargets(); }
       if (info && flyCamera) { const p = rackFocusPose(info); flyTo(p.pos as [number, number, number], p.tgt as [number, number, number]); }
     };
     let downX = 0, downY = 0, downT = 0;
@@ -373,7 +380,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       <IssueDetail issue={openIssue} rack={openIssueRack} onClose={() => setOpenIssueId(null)} />
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open or close it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
       </div>
     </div>
   );
