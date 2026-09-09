@@ -19,7 +19,8 @@ import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
 import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
 import { LiquidHud } from './rack/liquid/LiquidHud';
 import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
-import { buildRackFocus, pickRackId, rackFocusPose } from './rack/issues/RackFocus';
+import { buildRackFocus, pickHit, rackFocusPose } from './rack/issues/RackFocus';
+import { IssueDetail } from './rack/issues/IssueDetail';
 import { createReseatAnimation } from './rack/cabling/reseatAnimation';
 import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
 import type { Slot, RackView, ServerRackTwinProps, SwitchFixPhase } from './rack/types';
@@ -40,6 +41,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   // Rack selection: controlled via `selectedRack` when provided, otherwise internal. Picks made inside the 3D
   // scene come back through `pickRef` so the render-loop closure never has to see React state.
   const [internalSel, setInternalSel] = useState<string | null>(null);
+  const [openIssueId, setOpenIssueId] = useState<string | null>(null);
   const sel = selectedRack !== undefined ? selectedRack : internalSel;
   const selectRack = (id: string | null) => { setInternalSel(id); onSelectRack?.(id); };
   const pickRef = useRef(selectRack); pickRef.current = selectRack;
@@ -182,8 +184,9 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const pointerNdc = new THREE.Vector2();
     const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
     const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
-    // Which rack (if any) is under the pointer — any of the ten replicas, the interactive rack, or an alarm plate/beacon.
-    const rackUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickRackId(raycaster, focus, replicas, rack, LIVE_RACK_ID) as string | null; };
+    // Which rack (if any), and which issue card specifically, is under the pointer — any of the ten replicas, the
+    // interactive rack, or an alarm plate/beacon.
+    const hitUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickHit(raycaster, focus, replicas, rack, LIVE_RACK_ID) as { rackId: string | null; issueId: string | null }; };
     // Select a rack: outline it and (optionally) fly the camera to its front three-quarter.
     const selectRackInScene = (id: string | null, flyCamera: boolean) => {
       focus.userData.select(id);
@@ -196,15 +199,19 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
       if (dragged) return; // an orbit drag, not a click
       if (hitsFrontDoor(e)) { doorOpen = !doorOpen; updateDoorTargets(); return; }
-      const id = rackUnderPointer(e);
-      if (id) pickRef.current(id); // React owns the selection; it flows back down through api.selectRack
+      const hit = hitUnderPointer(e);
+      if (hit.rackId) pickRef.current(hit.rackId); // React owns the selection; it flows back down through api.selectRack
+      // Clicking an alarm card opens its detail modal; clicking empty space (no rack under the pointer at all)
+      // dismisses whatever's open. Clicking a rack elsewhere leaves an open modal as-is.
+      if (hit.issueId) setOpenIssueId(hit.issueId);
+      else if (!hit.rackId) setOpenIssueId(null);
     };
     let lastHoverMs = 0;
     const onPointerMove = (e: PointerEvent) => {
       const now = performance.now();
       if (now - lastHoverMs < 80) return;
       lastHoverMs = now;
-      renderer.domElement.style.cursor = hitsFrontDoor(e) || rackUnderPointer(e) ? 'pointer' : '';
+      renderer.domElement.style.cursor = hitsFrontDoor(e) || hitUnderPointer(e).rackId ? 'pointer' : '';
     };
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
@@ -325,8 +332,12 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   useEffect(() => { apiRef.current?.selectRack(sel, true); }, [sel]);
   useEffect(() => { apiRef.current?.setSwitchFix(switchFix); }, [switchFix]);
   useEffect(() => { apiRef.current?.setIssues(issues); }, [issues]);
+  // If the open issue's remediation clears it from the list (e.g. the patch-cable reseat flow), close its modal.
+  useEffect(() => { if (openIssueId && !issues.some((i) => i.id === openIssueId)) setOpenIssueId(null); }, [issues, openIssueId]);
 
   const thermalOn = v === 'thermal', liquidOn = v === 'liquid';
+  const openIssue = issues.find((i) => i.id === openIssueId) ?? null;
+  const openIssueRack = openIssue ? RACK_BY_ID[openIssue.rackId] ?? null : null;
   const VIEW_LABEL: Record<RackView, string> = { visual: 'Visual', thermal: 'Thermal camera', liquid: 'Liquid cooling' };
   const hottest = (() => { const a = apiRef.current; if (!a) return null; const t: number[] = temps ?? a.temps; const i = t.indexOf(Math.max(...t)); const s = a.slots[i]; if (!s) return null; const u = Math.round((s.y - s.h / 2 - 0.13) / 0.04445) + 1; return `HOTTEST U${u} · ${Math.round(s.h / 0.04445)}U · ${(19.5 + Math.min(1, t[i]) * 28.5).toFixed(1)} °C`; })();
 
@@ -359,6 +370,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
+      <IssueDetail issue={openIssue} rack={openIssueRack} onClose={() => setOpenIssueId(null)} />
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
         <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>

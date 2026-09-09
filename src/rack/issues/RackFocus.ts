@@ -181,21 +181,25 @@ export function buildRackFocus(THREE, rackBox, issues) {
 }
 
 /**
- * Resolve the rack id under a raycaster (already set from the pointer). Tests the alarm plates/beacons, the baked
+ * Resolve what's under a raycaster (already set from the pointer): the rack id, plus the issue id when the hit
+ * was an alarm card specifically (not a beacon or bare rack surface). Tests the alarm plates/beacons, the baked
  * replica groups (named `rack_replica_<row><index>`) and the interactive rack.
  */
-export function pickRackId(raycaster, focus, replicas, liveRack, liveRackId) {
+export function pickHit(raycaster, focus, replicas, liveRack, liveRackId) {
   const hitsMarker = raycaster.intersectObjects(focus.userData.pickables(), false);
-  if (hitsMarker.length) return hitsMarker[0].object.userData.rackId ?? null;
+  if (hitsMarker.length) {
+    const o = hitsMarker[0].object;
+    return { rackId: o.userData.rackId ?? null, issueId: o.userData.issueId ?? null };
+  }
   const targets = [...replicas.children, liveRack];
   const hits = raycaster.intersectObjects(targets, true);
-  if (!hits.length) return null;
+  if (!hits.length) return { rackId: null, issueId: null };
   let o = hits[0].object;
   while (o && !targets.includes(o)) o = o.parent;
-  if (!o) return null;
-  if (o === liveRack) return liveRackId;
+  if (!o) return { rackId: null, issueId: null };
+  if (o === liveRack) return { rackId: liveRackId, issueId: null };
   const m = /^rack_replica_([AB])(\d+)$/.exec(o.name);
-  if (!m) return null;
+  if (!m) return { rackId: null, issueId: null };
   const info = RACKS.find((r) => r.row === m[1] && r.index === Number(m[2]));
-  return info ? info.id : null;
+  return { rackId: info ? info.id : null, issueId: null };
 }
