@@ -74,7 +74,8 @@ right edge (title, device, age, summary, raw logs) and, for any issue that carri
   sits on the skull and the vest hugs the torso. Does rounds of the aisles between jobs; a dispatch pulls them off the
   rounds from wherever they are. A procedural upper-body layer (`people/armOverlay.ts`) rides on top of the clips:
   the arm swing is amplified while walking, the head turns toward the rack being walked to, the right hand rises
-  toward it over the last ~1.7 m and stays half-raised while the fix waits to be confirmed.
+  toward it over the last ~1.7 m and stays half-raised while the fix waits to be confirmed. The technician can also
+  be driven by hand — see "Driving the technician" below.
 - **Staff entrance** (`environment/Environment.ts`): steel door with push bar and window, badge reader (flashes blue
   when the technician badges in) and EXIT sign.
 - **NOC wall** (`environment/NocWall.ts`): 2×2 video wall over an operator desk, redrawn at 1 Hz with live PUE, IT
@@ -92,8 +93,23 @@ People / Monitoring / Facility / Power / Life safety, with `all` / `none` / `def
 remembered per browser (`localStorage` key `rackTwin.layers`). Embedders can pin items with the `layers` prop (those checkboxes
 show disabled) and listen with `onLayersChange`; the definitions live in `SCENE_LAYER_DEFS` (`src/rack/types.ts`).
 
+### Driving the technician
+
+Arrow keys (or WASD) take the technician off their rounds and walk them along the hall's corridor network
+(`people/corridors.ts`: the two cold aisles, the end-of-row passages, the lane in from the staff door and the approach
+lane to the interactive rack). **↑ / ↓** walk forward / back-pedal; **← / →** queue a 90° turn that is taken at the
+next junction with that branch (immediately when already standing at one). Every rack has a stop in front of it: let
+go of the keys within half a metre of one and the technician steps onto it, turns to the rack, raises a hand toward it
+and scans the device stack (`Inspecting Rack A-04` in the chip at bottom-left); the camera eases to that rack's focus
+shot. While walking, an over-the-shoulder camera follows; orbiting or zooming with the mouse pauses the follow until the
+next key press. A remediation dispatch always takes the technician over and hands control back when the job is done;
+20 s without a key and the rounds quietly resume.
+
 Append `?debug` to the URL to expose `window.__rackTwin` (the scene's imperative API — `selectRack`, `flyTo`,
-`setCamera`, `setRemediation`, `triggerPowerEvent`, `stats`, `meshCensus`, …) for tooling and screenshot scripts.
+`setCamera`, `setRemediation`, `triggerPowerEvent`, `stats`, `meshCensus`, `techDrive`, `techDriving`,
+`techStopDrive`, …) for tooling and screenshot scripts. `scripts/corridors.check.mjs` unit-checks the corridor
+geometry in node; `scripts/drive.cdp.mjs` drives the built app in headless Chrome with real key events (needs
+`npx vite preview --port 4173 --host 127.0.0.1`).
 
 ### Rendering budget
 
@@ -146,7 +162,8 @@ src/rack/
     RemediationScene.ts       Routes an in-flight remediation to the right on-rack act
     fruSwapAnimation.ts       Proxy FRU swap / console-strip animations (work on baked replica racks)
     remediationApi.ts         Remediation API client (real POST or mocked round trip)
-  people/                     Technician avatar (Technician.ts), procedural arm/head layer (armOverlay.ts), corridor routing (paths.ts)
+  people/                     Technician avatar (Technician.ts), procedural arm/head layer (armOverlay.ts), corridor routing (paths.ts),
+                              keyboard drive: corridor network, junction turns, rack stops (corridors.ts)
   mergeStatics.ts             Per-item static merge of the interactive rack's decorative parts (draw-call budget)
   power/PowerEvent.ts         Scripted utility-loss state machine (pure TS)
   audio/Ambience.ts           Web Audio sound bed + chirps

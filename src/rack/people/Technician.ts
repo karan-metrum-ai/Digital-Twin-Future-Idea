@@ -15,6 +15,7 @@ const WALK_SPEED = 1.5;      // m/s
 const TURN_RATE = 9;         // yaw easing rate, 1/s (frame-rate independent)
 const REACH_FROM_M = 1.7;    // the right hand starts rising toward the rack this far from the stand point
 const REACH_HOLD = 0.7;      // how far the hand stays raised while standing at the rack waiting for the fix
+const INSPECT_REACH = 0.75;  // hand toward the rack while the user has parked the technician in front of it (drive mode)
 const HEIGHT_M = 1.78;
 const CLIP = { idle: 'Idle_Loop', walk: 'Walk_Loop', kneel: 'Fixing_Kneeling', reach: 'Interact' };
 const WALK_CLIP_MPS = 1.35; // ground speed the Walk_Loop cycle is authored at
@@ -164,6 +165,9 @@ export function buildTechnician(THREE) {
   /* -------- motion state -------- */
   let path = null, seg = 0, segT = 0, onArrive = null, pose = 'idle', targetYaw = Math.PI, faceYaw = null;
   let reachWalk = false, atJob = false, pendingLook = null; // reachWalk: this walk ends at a rack (hand rises on approach); atJob: standing at one
+  // Drive mode (keyboard, see corridors.ts): the scene places the figure every frame instead of a path.
+  let driving = false, driveSpeed = 0, inspecting = false;
+  const walkTimeScale = (mps) => { if (ready && actions[CLIP.walk]) actions[CLIP.walk].setEffectiveTimeScale(mps / WALK_CLIP_MPS); };
 
   /** Metres left to the end of the current path. */
   const remainingM = () => {
@@ -175,6 +179,7 @@ export function buildTechnician(THREE) {
   /** Walk a waypoint chain. `opts.reach`: the chain ends at a rack, so the hand rises toward it on the last stretch. */
   const walkTo = (pts, opts = {}) => new Promise((resolve) => {
     if (!pts || pts.length < 2) { resolve(); return; }
+    driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); // a dispatch walk always wins over the keyboard
     root.position.set(pts[0].x, 0, pts[0].z);
     path = pts; seg = 0; segT = 0; faceYaw = null; pose = 'walk'; reachWalk = !!opts.reach; atJob = false; if (ready) fade(CLIP.walk);
     onArrive = () => { pose = 'idle'; atJob = reachWalk; if (ready) fade(CLIP.idle); resolve(); };
@@ -203,7 +208,9 @@ export function buildTechnician(THREE) {
     let reach = 0;
     if (path && reachWalk) reach = smooth01(1 - (remainingM() - 0.2) / REACH_FROM_M);
     else if (!path && atJob && pose === 'idle') reach = REACH_HOLD;
-    overlay.apply({ walking: !!path, reach, armsFree: pose === 'idle' || pose === 'walk' }, dt);
+    else if (inspecting && pose === 'idle') reach = INSPECT_REACH;
+    const moving = !!path || (driving && Math.abs(driveSpeed) > 0.05);
+    overlay.apply({ walking: moving, reach, armsFree: pose === 'idle' || pose === 'walk', inspect: inspecting && pose === 'idle' }, dt);
   };
 
   root.userData = {
@@ -214,9 +221,28 @@ export function buildTechnician(THREE) {
     /** Face a world yaw (toward the rack) once standing still. */
     face(yaw) { faceYaw = yaw; },
     get pose() { return pose; },
-    get walking() { return !!path; },
+    get walking() { return !!path || (driving && Math.abs(driveSpeed) > 0.05); },
+    get driving() { return driving; },
+    get inspecting() { return inspecting; },
+    /**
+     * Drive mode: the scene's controller (corridors.ts) supplies position / heading / ground speed every frame; the
+     * walk clip's rate follows the speed (negative = back-pedal). `null` leaves drive mode standing where they are.
+     */
+    drive(frame) {
+      if (!frame) { if (!driving) return; driving = false; driveSpeed = 0; walkTimeScale(WALK_SPEED); if (pose === 'walk') { pose = 'idle'; if (ready) fade(CLIP.idle); } return; }
+      if (!driving) { driving = true; path = null; onArrive = null; reachWalk = false; atJob = false; faceYaw = null; }
+      root.position.set(frame.x, 0, frame.z); targetYaw = frame.yaw; driveSpeed = frame.speed;
+      if (Math.abs(driveSpeed) > 0.05) {
+        if (pose !== 'walk') { pose = 'walk'; if (ready) fade(CLIP.walk); }
+        walkTimeScale(driveSpeed);
+      } else if (pose === 'walk') { pose = 'idle'; if (ready) fade(CLIP.idle); }
+    },
+    /** Cancel any walk or drive and stand still where they are (the keyboard taking over from the rounds). */
+    stop() { path = null; onArrive = null; reachWalk = false; atJob = false; faceYaw = null; driveSpeed = 0; walkTimeScale(WALK_SPEED); if (pose === 'walk') { pose = 'idle'; if (ready) fade(CLIP.idle); } },
+    /** Face `t.yaw`, look at (t.x, t.z) and hold the inspecting pose (hand toward the rack, head scanning); null clears. */
+    inspect(t) { inspecting = !!t; faceYaw = t ? t.yaw : null; pendingLook = t ? { x: t.x, z: t.z } : null; if (overlay) overlay.lookAt(pendingLook); },
     get ready() { return ready; },
-    reset(x, z) { path = null; onArrive = null; pose = 'idle'; faceYaw = null; reachWalk = false; atJob = false; pendingLook = null; root.position.set(x, 0, z); root.rotation.y = Math.PI; if (overlay) overlay.lookAt(null); if (ready) fade(CLIP.idle, 0); },
+    reset(x, z) { path = null; onArrive = null; pose = 'idle'; faceYaw = null; reachWalk = false; atJob = false; pendingLook = null; driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); root.position.set(x, 0, z); root.rotation.y = Math.PI; if (overlay) overlay.lookAt(null); if (ready) fade(CLIP.idle, 0); },
     get overlay() { return overlay; },
   };
   return root;

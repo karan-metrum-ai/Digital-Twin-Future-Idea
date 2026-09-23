@@ -19,6 +19,11 @@ const REACH_RAISE = 1.3;     // rad, right upper arm forward at full reach (the 
 const REACH_OUT = 0.22;      // rad, abduction so the hand clears the hip/rack edge
 const REACH_ELBOW = 0.4;     // rad
 const LOOK_MAX = 0.8;        // rad, head yaw clamp
+// Inspect scan (parked in front of a rack): the head sweeps slowly up and down the device stack and a little side to side.
+const SCAN_PITCH = 0.2;      // rad amplitude of the up/down scan
+const SCAN_DOWN = -0.28;     // rad bias toward the devices (head ~1.65 m, rack face centre ~1.0 m at ~1 m)
+const SCAN_PERIOD_S = 3.2;
+const SCAN_YAW = 0.12;       // rad, side-to-side sweep
 
 export function createArmOverlay(THREE, bones, root) {
   const q = new THREE.Quaternion(), qi = new THREE.Quaternion(), qr = new THREE.Quaternion();
@@ -36,9 +41,10 @@ export function createArmOverlay(THREE, bones, root) {
   const restore = () => { for (const [bone, q0] of touched) bone.quaternion.copy(q0); touched.clear(); };
 
   /** Smoothed weights (0..1) and their targets. */
-  const w = { swing: 0, reach: 0, look: 0 };
-  const target = { swing: 0, reach: 0, look: 0 };
+  const w = { swing: 0, reach: 0, look: 0, scan: 0 };
+  const target = { swing: 0, reach: 0, look: 0, scan: 0 };
   let lookPoint = null; // { x, z } world
+  let scanT = 0;
 
   /** Rotate `bone` by `angle` about a world-space axis, keeping its subtree's world matrices current. */
   const rotateWorld = (bone, worldAxis, angle) => {
@@ -54,7 +60,7 @@ export function createArmOverlay(THREE, bones, root) {
 
   /**
    * Apply the overlay for this frame. Call after mixer.update() (and call restore() before it).
-   * `s`: { walking, reach (0..1 desired reach amount), armsFree (false while a work clip owns the arms) }.
+   * `s`: { walking, reach (0..1 desired reach amount), armsFree (false while a work clip owns the arms), inspect (head scan) }.
    */
   const apply = (s, dt) => {
     target.swing = s.walking && s.armsFree ? 1 : 0;
@@ -63,7 +69,10 @@ export function createArmOverlay(THREE, bones, root) {
     w.swing = approach(w.swing, target.swing, dt, 7);
     w.reach = approach(w.reach, target.reach, dt, target.reach < w.reach ? 9 : 5);
     w.look = approach(w.look, target.look, dt, 4);
-    if (w.swing < 0.01 && w.reach < 0.01 && w.look < 0.01) return;
+    target.scan = s.inspect && s.armsFree ? 1 : 0;
+    w.scan = approach(w.scan, target.scan, dt, 3);
+    scanT = w.scan > 0.01 ? scanT + dt : 0;
+    if (w.swing < 0.01 && w.reach < 0.01 && w.look < 0.01 && w.scan < 0.01) return;
 
     const yaw = root.rotation.y;
     fwd.set(Math.sin(yaw), 0, Math.cos(yaw));
@@ -87,6 +96,11 @@ export function createArmOverlay(THREE, bones, root) {
       const want = Math.atan2(lookPoint.x - root.position.x, lookPoint.z - root.position.z);
       let d = want - yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
       rotateWorld(head, UP, THREE.MathUtils.clamp(d, -LOOK_MAX, LOOK_MAX) * w.look);
+    }
+    if (w.scan > 0.01 && head) {
+      const ph = (scanT / SCAN_PERIOD_S) * Math.PI * 2;
+      rotateWorld(head, UP, SCAN_YAW * Math.sin(ph * 0.5 + 1.0) * w.scan);                 // slow sweep across the rack's width
+      rotateWorld(head, charRight, (SCAN_DOWN + SCAN_PITCH * Math.sin(ph)) * w.scan);      // up/down over the device stack
     }
   };
 
