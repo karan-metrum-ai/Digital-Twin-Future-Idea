@@ -18,20 +18,31 @@ import { buildCoolingVapor } from './rack/thermal/CoolingVapor';
 import { buildLiquidLoop } from './rack/liquid/LiquidLoop';
 import { createLiquidLoopSim, type LoopState } from './rack/liquid/LiquidLoopSim';
 import { LiquidHud } from './rack/liquid/LiquidHud';
-import { DEMO_ISSUES, LIVE_RACK_ID, RACK_BY_ID } from './rack/issues/issues';
+import { DEMO_ISSUES, FAULT_CABLE_ISSUE_ID, LIVE_RACK_ID, RACK_BY_ID, leakZoneForIssue } from './rack/issues/issues';
 import { buildRackFocus, pickHit, rackFocusPose } from './rack/issues/RackFocus';
 import { IssueDetail } from './rack/issues/IssueDetail';
 import { createReseatAnimation } from './rack/cabling/reseatAnimation';
+import { buildRemediationScene } from './rack/issues/RemediationScene';
+import { buildTechnician } from './rack/people/Technician';
+import { buildPath, nearestPatrolIndex, PATROL, standPoint, TECH_SPAWN } from './rack/people/paths';
+import { buildPowerPlant } from './rack/environment/PowerPlant';
+import { buildLifeSafety } from './rack/environment/LifeSafety';
+import { buildLeakDetection } from './rack/environment/LeakDetection';
+import { createPowerEvent, type PowerPhase } from './rack/power/PowerEvent';
+import { buildNocWall } from './rack/environment/NocWall';
+import { createAmbience, type Ambience } from './rack/audio/Ambience';
+import { ledIntensity } from './rack/ledPatterns';
 import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
-import type { Slot, RackView, ServerRackTwinProps, SwitchFixPhase } from './rack/types';
+import { REMEDIATION_IDLE, DEFAULT_SCENE_LAYERS, SCENE_LAYER_DEFS, type Slot, type RackView, type ServerRackTwinProps, type RemediationState, type SceneLayers } from './rack/types';
 
-export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity, SwitchFixPhase } from './rack/types';
+export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity, Remediation, RemediationAction, FruKind, RemediationPhase, RemediationState, SceneLayer, SceneLayers } from './rack/types';
+export { REMEDIATION_IDLE, DEFAULT_SCENE_LAYERS, SCENE_LAYER_DEFS } from './rack/types';
 export { DEMO_ISSUES, RACKS, LIVE_RACK_ID, FAULT_CABLE_ISSUE_ID } from './rack/issues/issues';
 export { requestRemediation } from './rack/issues/remediationApi';
 export { Playground } from './rack/Playground';
 
 /* ------------------------------------------------------------------ component ------------------------------------------------------------------ */
-export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, selectedRack, onSelectRack, switchFix = 'idle', onSwitchFixDone, background = '#16171b', className, style }: ServerRackTwinProps) {
+export default function ServerRackTwin({ temps, view, onViewChange, showCovers = true, showAirflow = true, explode = 0, onItems, issues = DEMO_ISSUES, selectedRack, onSelectRack, remediation = REMEDIATION_IDLE, onRemediate, onRemediationDone, remediationNote = null, powerEvent = 0, onPowerPhase, layers, onLayersChange, background = '#16171b', className, style }: ServerRackTwinProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<any>(null);
   const [internalView, setInternalView] = useState<RackView>('visual');
@@ -46,7 +57,36 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   const selectRack = (id: string | null) => { setInternalSel(id); onSelectRack?.(id); };
   const pickRef = useRef(selectRack); pickRef.current = selectRack;
   const issuesRef = useRef(issues); issuesRef.current = issues;
-  const fixDoneRef = useRef(onSwitchFixDone); fixDoneRef.current = onSwitchFixDone;
+  const remDoneRef = useRef(onRemediationDone); remDoneRef.current = onRemediationDone;
+  // Snapshot of the issue whose modal is open: it survives being cleared from the list while its remediation sits in
+  // 'done', so the closing note stays readable for a moment after the alarm card leaves the rack.
+  const [openSnapshot, setOpenSnapshot] = useState<typeof issues[number] | null>(null);
+  const [powerPhase, setPowerPhase] = useState<PowerPhase>('utility');
+  const powerPhaseRef = useRef(onPowerPhase); powerPhaseRef.current = onPowerPhase;
+  // Sound bed on/off, remembered per browser. Off by default: autoplay policy and nobody expects a page to hum.
+  const [audioOn, setAudioOn] = useState<boolean>(() => { try { return localStorage.getItem('rackTwin.audio') === '1'; } catch { return false; } });
+  const audioOnRef = useRef(audioOn); audioOnRef.current = audioOn;
+  const ambienceRef = useRef<Ambience | null>(null);
+  // Scene items: which of the hall's optional fit-out is shown. Uncontrolled state is remembered per browser; a
+  // `layers` prop overrides individual items.
+  const [internalLayers, setInternalLayers] = useState<SceneLayers>(() => { try { return { ...DEFAULT_SCENE_LAYERS, ...(JSON.parse(localStorage.getItem('rackTwin.layers') ?? 'null') ?? {}) }; } catch { return DEFAULT_SCENE_LAYERS; } });
+  const sceneLayers: SceneLayers = { ...internalLayers, ...(layers ?? {}) };
+  const layersKey = JSON.stringify(sceneLayers);
+  const setLayer = (id: keyof SceneLayers, on: boolean) => {
+    const next = { ...sceneLayers, [id]: on };
+    setInternalLayers(next); onLayersChange?.(next);
+    try { localStorage.setItem('rackTwin.layers', JSON.stringify(next)); } catch { /* private mode */ }
+  };
+  const [layersOpen, setLayersOpen] = useState(false);
+  const layersPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!layersOpen) return;
+    const onDown = (e: PointerEvent) => { if (!layersPanelRef.current?.contains(e.target as Node)) setLayersOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLayersOpen(false); };
+    window.addEventListener('pointerdown', onDown); window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [layersOpen]);
+  useEffect(() => { ambienceRef.current?.mute(!audioOn); try { localStorage.setItem('rackTwin.audio', audioOn ? '1' : '0'); } catch { /* private mode */ } }, [audioOn]);
 
   useEffect(() => {
     const host = hostRef.current; if (!host) return;
@@ -81,9 +121,38 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const replicas = buildRackReplicas(THREE, rack); disableShadows(replicas); scene.add(replicas);
     // Rack footprint (still at the origin) — the selection outline is sized from it and re-posed onto whichever rack is picked.
     const rackBox = new THREE.Box3().setFromObject(rack);
-    scene.add(buildEnvironment(THREE));
+    const env = buildEnvironment(THREE); scene.add(env);
+    // The technician waits out of sight behind the staff door until a remediation dispatches them.
+    const tech = buildTechnician(THREE); tech.userData.reset(TECH_SPAWN.x, TECH_SPAWN.z); applySilhouetteShadows(tech); scene.add(tech);
     // Overhead cable-tray / wire-framing grid hung off the roof above both rows (static, merged per material).
     const overhead = buildOverheadCabling(THREE); disableShadows(overhead); scene.add(overhead);
+    // Electrical plant: busway + drop cords over every rack, end-of-row PDUs, UPS bank, standby genset — and the
+    // scripted utility-loss event that plays through them (lighting, LCDs, LEDs, beacon).
+    const power = buildPowerPlant(THREE); scene.add(power);
+    // Fire suppression + VESDA + horn/strobes, and the leak-detection rope under both rows' coolant headers.
+    const life = buildLifeSafety(THREE); scene.add(life);
+    const leak = buildLeakDetection(THREE); scene.add(leak);
+    const noc = buildNocWall(THREE); scene.add(noc);
+    // Sound bed (muted until the speaker toggle is on; the AudioContext itself is created on the first pointer-down).
+    const ambience = createAmbience(!audioOnRef.current); ambienceRef.current = ambience;
+    const NOISE_A = new THREE.Vector3(0, 1, 0), NOISE_B = new THREE.Vector3(0, 1, -2.27), NOISE_X = new THREE.Vector3(LIVE_RACK_PLACEMENT.x, 1, LIVE_RACK_PLACEMENT.z);
+    let nocFrame = 0, nocDrawnAt = -10;
+    const applyLeakZones = (list: { remediation?: { action: string }; rackId: string }[]) => {
+      const wet = new Set<number>(); for (const i of list) { const z = leakZoneForIssue(i as any); if (z) wet.add(z); }
+      leak.userData.setZoneWet(1, wet.has(1)); leak.userData.setZoneWet(2, wet.has(2));
+    };
+    applyLeakZones(issuesRef.current);
+    const powerEvt = createPowerEvent({ onPhase: (p) => { setPowerPhase(p); powerPhaseRef.current?.(p); if (p === 'utility_lost') ambience.chirp('alarm'); if (p === 'generator' || p === 'utility_restored') ambience.chirp('transfer'); } });
+    const BASE_LIGHT = { hemi: hemi.intensity, key: key.intensity, fill: fill.intensity, front: front.intensity, lamp: env.userData.lamps.material.emissiveIntensity };
+    const applyPower = () => {
+      const { lightLevel: k, emergency, source, upsMode, upsPct, upsMin, genRunning } = powerEvt.info;
+      const kk = 0.12 + 0.88 * k; // never fully black: emergency lighting + LED glow keep the hall legible
+      hemi.intensity = BASE_LIGHT.hemi * kk; key.intensity = BASE_LIGHT.key * kk; fill.intensity = BASE_LIGHT.fill * kk; front.intensity = BASE_LIGHT.front * kk;
+      env.userData.lamps.material.emissiveIntensity = BASE_LIGHT.lamp * k;
+      env.userData.emergency.emissiveIntensity = 2.6 * emergency;
+      life.userData.setAlarm(source === 'none' || source === 'battery');
+      power.userData.setState({ source, upsMode, upsPct, upsMin, genRunning });
+    };
     // On-rack alarm plates/beacons + door-hairline selection for the issues panel; rack picking maps clicks back to rack ids.
     const focus = buildRackFocus(THREE, rackBox, issuesRef.current); scene.add(focus);
     // Heat simulation + cold-air vapour for the ten racks in the rows — same intake/exhaust particle sim and
@@ -118,6 +187,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const leds: THREE.MeshStandardMaterial[] = rack.userData.animatedLeds;
     const faultCable: any = rack.userData.faultCable;
     const reseat = faultCable ? createReseatAnimation(THREE, faultCable) : null;
+    // On-rack remediation acts (FRU proxy swaps, console strips, the hi-fi cable reseat) for whichever issue is being fixed.
+    const remScene = buildRemediationScene(THREE, focus, { reseat }); scene.add(remScene);
     const explodeItems: any[] = rack.userData.items; const doors: any = rack.userData.doors;
 
     // Name tags for the exploded view: one canvas-text sprite per item, parented to the item's group so it
@@ -201,7 +272,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       if (info && flyCamera) { const p = rackFocusPose(info); flyTo(p.pos as [number, number, number], p.tgt as [number, number, number]); }
     };
     let downX = 0, downY = 0, downT = 0;
-    const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); fly = null; };
+    const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); fly = null; ambience.unlock(); };
     const onPointerUp = (e: PointerEvent) => {
       const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
       if (dragged) return; // an orbit drag, not a click
@@ -210,7 +281,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       if (hit.rackId) pickRef.current(hit.rackId); // React owns the selection; it flows back down through api.selectRack
       // Clicking an alarm card opens its detail modal; clicking empty space (no rack under the pointer at all)
       // dismisses whatever's open. Clicking a rack elsewhere leaves an open modal as-is.
-      if (hit.issueId) setOpenIssueId(hit.issueId);
+      if (hit.issueId) { setOpenIssueId(hit.issueId); setOpenSnapshot(issuesRef.current.find((i) => i.id === hit.issueId) ?? null); }
       else if (!hit.rackId) setOpenIssueId(null);
     };
     let lastHoverMs = 0;
@@ -234,9 +305,14 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         if ((++liquidFrame & 1) === 0) liquid.userData.tick(t, renderer.getPixelRatio());
       }
       focus.userData.tick(t);
-      if (!thermal.active) leds.forEach((m, i) => { const b = Math.sin(t * 11 + i * 1.17) + Math.sin(t * 5.3 + i * 2.5); m.emissiveIntensity = b > 0.7 ? 3.2 : 1.2; });
+      if (!thermal.active) { const mode = powerEvt.info.ledMode; leds.forEach((m) => { m.emissiveIntensity = ledIntensity(m.userData.pattern ?? 'activity', t, m.userData.seed ?? 0, mode); }); }
+      // NOC wall + ambience mix at ~1 Hz / every few frames — both cheap, neither needs per-frame precision.
+      if (t - nocDrawnAt > 1) { nocDrawnAt = t; noc.userData.draw({ loop: loopSim.state(), issues: issuesRef.current, power: powerEvt.info }); }
+      if ((++nocFrame % 6) === 0) { const d = Math.min(camera.position.distanceTo(NOISE_A), camera.position.distanceTo(NOISE_B), camera.position.distanceTo(NOISE_X)); ambience.tick(1 - THREE.MathUtils.clamp((d - 1.5) / 7, 0, 1), powerEvt.info.genRunning ? 1 : 0); }
       // Disconnected patch cable: sharp red 'beep' (fast rise, quick decay) rather than a soft sine, so it reads as an alarm.
       if (reseat) { reseat.tick(t); if (reseat.pulsing) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; } }
+      remScene.userData.tick(t); tech.userData.tick(t, dt); env.userData.tick(t);
+      if (powerEvt.active) { powerEvt.tick(t); applyPower(); } power.userData.tick(t); life.userData.tick(t); leak.userData.tick(t);
       explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
       if (fly) {
         const u = Math.min(1, (performance.now() / 1000 - fly.start) / fly.dur), e = easeInOut(u);
@@ -253,6 +329,57 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       renderer.render(scene, camera); raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
+
+    // Technician dispatch for the active remediation: badge in, walk the corridors to the rack, work at the device's
+    // height while the act plays, then walk back out. The act itself waits for the technician to arrive.
+    const sceneTime = () => (performance.now() - t0) / 1000;
+    let techJob: { issueId: string; arrived: boolean; pendingAct: (() => void) | null; path: { x: number; z: number }[] } | null = null;
+    // Between jobs the technician does rounds (paths.PATROL): walks the aisles, stops to look over a rack now and
+    // then. A dispatch interrupts the rounds wherever they are; when the job is done they pick the rounds back up
+    // from the nearest patrol point.
+    let patrolToken = 0;
+    const techPos = () => ({ x: tech.position.x, z: tech.position.z });
+    const patrolFrom = (i: number) => {
+      const token = ++patrolToken;
+      const step = (idx: number) => {
+        if (patrolToken !== token || techJob) return;
+        const pt = PATROL[idx % PATROL.length];
+        tech.userData.walkTo([techPos(), { x: pt.x, z: pt.z }]).then(() => {
+          if (patrolToken !== token || techJob) return;
+          if (pt.look !== undefined) { tech.userData.face(pt.look); tech.userData.setPose('idle'); window.setTimeout(() => step(idx + 1), (pt.pauseS ?? 3) * 1000); }
+          else step(idx + 1);
+        });
+      };
+      step(i);
+    };
+    // Badge in through the staff door, then start the rounds.
+    env.userData.setDoorOpen(true); env.userData.badgeRead(sceneTime(), 1.5);
+    tech.userData.walkTo([TECH_SPAWN, PATROL[0]]).then(() => { env.userData.setDoorOpen(false); if (!techJob) patrolFrom(1); });
+    const dispatchTech = (issue: { id: string; rackId: string }) => {
+      const info = RACK_BY_ID[issue.rackId]; if (!info) return;
+      patrolToken++; // stop the rounds
+      const path = buildPath(techPos(), info), stand = standPoint(info);
+      techJob = { issueId: issue.id, arrived: false, pendingAct: null, path };
+      const job = techJob;
+      ambience.chirp('badge');
+      tech.userData.setPose('idle');
+      tech.userData.walkTo(path).then(() => {
+        if (techJob !== job) return;
+        tech.userData.face(stand.yaw);
+        job.arrived = true; const act = job.pendingAct; job.pendingAct = null; act?.();
+      });
+    };
+    const techWorkAt = (u: number) => tech.userData.setPose(u <= 14 ? 'kneel' : 'reach');
+    const resumePatrol = () => { const p = techPos(); techJob = null; patrolFrom(nearestPatrolIndex(p)); };
+    const techLeave = () => {
+      const job = techJob; if (!job) return;
+      tech.userData.setPose('idle');
+      // Step back from the rack to the corridor point they came in on, then pick the rounds back up from there.
+      const back = job.path.length >= 2 ? [techPos(), job.path[job.path.length - 2]] : [techPos()];
+      tech.userData.walkTo(back).then(() => { if (techJob === job) resumePatrol(); });
+    };
+    const techReset = () => { if (techJob) { tech.userData.setPose('idle'); resumePatrol(); } };
+
     apiRef.current = {
       // One entry point for the three views. Air-side effects (intake streaks, exhaust plumes, floor vapour) only
       // make sense in the visual/air-cooled view; the liquid view swaps them for the coolant loop.
@@ -283,28 +410,73 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
       /**
-       * Remediation of the unseated patch cable. 'requested': open the door and fly to a close view of the switch
-       * port (camera stays on the rack's right so the swinging door never crosses the lens). 'confirmed': play the
-       * staged reseat and report completion. 'done': seated immediately (e.g. mounted after the fix). 'idle': fault live.
+       * Drive the active remediation. 'requested': select the rack and fly to a shot of its front (the fault cable
+       * keeps its close-up of the switch port, with the door opened and the camera on the rack's right so the swing
+       * never crosses the lens). 'confirmed': act out the fix on the rack and report completion. 'idle'/'done': clear.
        */
-      setSwitchFix(phase: SwitchFixPhase) {
-        if (!faultCable || !reseat) return;
-        if (phase === 'idle') { reseat.reset(); return; }
-        if (phase === 'done') { reseat.seatNow(); return; }
-        if (phase === 'requested' || phase === 'confirmed') {
-          doorOpen = true; updateDoorTargets(); pickRef.current(LIVE_RACK_ID);
-          const tgt = rack.localToWorld(new THREE.Vector3(faultCable.port.x, faultCable.port.y, faultCable.port.z));
-          const fwd = new THREE.Vector3(0, 0, 1).transformDirection(rack.matrixWorld), right = new THREE.Vector3(1, 0, 0).transformDirection(rack.matrixWorld);
-          const pos = tgt.clone().addScaledVector(fwd, 0.62).addScaledVector(right, 0.22); pos.y += 0.07;
-          flyTo(pos.toArray() as [number, number, number], tgt.toArray() as [number, number, number]);
+      setRemediation(r: RemediationState) {
+        const issue = r.issueId ? issuesRef.current.find((i) => i.id === r.issueId) ?? null : null;
+        if (!issue || r.phase === 'idle') { remScene.userData.set(null, 'idle'); if (techJob && (!issue || techJob.issueId !== issue.id || r.phase === 'idle')) techReset(); return; }
+        if (r.phase === 'done') { remScene.userData.set(null, 'idle'); return; } // technician is already walking out
+        const info = RACK_BY_ID[issue.rackId]; if (!info) return;
+        const isFaultCable = issue.id === FAULT_CABLE_ISSUE_ID && !!faultCable && !!reseat;
+        if (r.phase === 'requested') {
+          pickRef.current(issue.rackId);
+          if (isFaultCable) {
+            doorOpen = true; updateDoorTargets();
+            const tgt = rack.localToWorld(new THREE.Vector3(faultCable.port.x, faultCable.port.y, faultCable.port.z));
+            const fwd = new THREE.Vector3(0, 0, 1).transformDirection(rack.matrixWorld), right = new THREE.Vector3(1, 0, 0).transformDirection(rack.matrixWorld);
+            const pos = tgt.clone().addScaledVector(fwd, 0.62).addScaledVector(right, 0.22); pos.y += 0.07;
+            flyTo(pos.toArray() as [number, number, number], tgt.toArray() as [number, number, number]);
+          } else {
+            // Rack front from a step back and to the right: the device at the issue's U, the alarm card and the
+            // technician's stand point all in frame.
+            const fx = Math.sin(info.rotY), fz = Math.cos(info.rotY), rx = Math.cos(info.rotY), rz = -Math.sin(info.rotY);
+            const uY = THREE.MathUtils.clamp(0.13 + (issue.u - 1) * 0.04445, 0.5, 1.7);
+            flyTo([info.x + fx * 2.5 + rx * 1.7, 1.95, info.z + fz * 2.5 + rz * 1.7], [info.x + fx * 0.4 - rx * 0.1, uY * 0.55 + 0.5, info.z + fz * 0.4 - rz * 0.1]);
+          }
+          remScene.userData.set(issue, 'requested');
+          if (!techJob || techJob.issueId !== issue.id) dispatchTech(issue);
         }
-        if (phase === 'confirmed') reseat.start((performance.now() - t0) / 1000 + 0.9, () => fixDoneRef.current?.()); // let the door finish opening first
+        if (r.phase === 'confirmed') {
+          if (isFaultCable) { doorOpen = true; updateDoorTargets(); }
+          if (!techJob || techJob.issueId !== issue.id) dispatchTech(issue);
+          const act = () => {
+            techWorkAt(issue.u);
+            remScene.userData.set(issue, 'confirmed', {
+              onClick: () => ambience.chirp('click'),
+              onDone: (id: string) => {
+                // Fitting the blanking panels clears the recirculation: that server's inlet load falls back.
+                if (issue.remediation?.action === 'fit_blanking_panel') {
+                  const slots: Slot[] = rack.userData.slots, cur: number[] = [...(thermal.temps as number[])];
+                  const idx = slots.findIndex((s) => Math.abs(s.y - s.h / 2 - (0.13 + (issue.u - 1) * 0.04445)) < 0.01);
+                  if (idx >= 0) { cur[idx] = Math.min(cur[idx], 0.35); apiRef.current.setTemps(cur); }
+                }
+                techLeave();
+                remDoneRef.current?.(id);
+              },
+            });
+          };
+          if (techJob!.arrived) act(); else techJob!.pendingAct = act;
+        }
       },
-      switchFixState() { return reseat ? reseat.state : 'none'; },
+      /** Show/hide the hall's optional fit-out (see SCENE_LAYER_DEFS). */
+      setLayers(l: SceneLayers) {
+        tech.visible = l.technician; focus.visible = l.alarmCards; overhead.visible = l.overheadCabling; noc.visible = l.nocWall; leak.visible = l.leakDetection;
+        env.userData.door.visible = l.staffDoor;
+        power.userData.setVisible('busway', l.busway); power.userData.setVisible('pdu', l.floorPdus); power.userData.setVisible('ups', l.ups); power.userData.setVisible('genset', l.genset);
+        life.userData.setVisible('suppression', l.fireSuppression); life.userData.setVisible('vesda', l.vesda); life.userData.setVisible('alarms', l.alarmDevices);
+      },
+      /** Run the scripted utility-loss event (no-op while one is already playing). */
+      triggerPowerEvent() { const ok = powerEvt.trigger(sceneTime()); if (ok) applyPower(); return ok; },
+      powerInfo() { return powerEvt.info; },
+      /** Technician position/pose for tooling and screenshot scripts. */
+      techPose(p: 'idle' | 'walk' | 'kneel' | 'reach') { tech.userData.setPose(p); },
+      techState() { return { visible: tech.visible, pos: tech.position.toArray(), pose: tech.userData.pose, walking: tech.userData.walking, job: techJob ? { issueId: techJob.issueId, arrived: techJob.arrived } : null }; },
       /** Outline rack `id` (null clears) and, when `flyCamera`, fly to its front three-quarter. */
       selectRack(id: string | null, flyCamera = true) { selectRackInScene(id, flyCamera); },
       /** Replace the open-issue list — rebuilds the alarm plates and roof beacons on the racks. */
-      setIssues(list: any[]) { focus.userData.setIssues(list); },
+      setIssues(list: any[]) { focus.userData.setIssues(list); applyLeakZones(list); },
       selectedRack() { return focus.userData.selectedId as string | null; },
       cameraPos() { return camera.position.toArray(); },
       airflow: showAirflow, mode: 'visual' as RackView,
@@ -312,13 +484,14 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       items: explodeItems.map((it) => ({ kind: it.kind, label: it.label })),
     };
     onItems?.(apiRef.current.items);
-    if (import.meta.env.DEV) (window as any).__rackTwin = apiRef.current; // dev-only hook for tooling / screenshot scripts
+    if (import.meta.env.DEV || /[?&]debug\b/.test(window.location.search)) (window as any).__rackTwin = apiRef.current; // dev / ?debug hook for tooling and screenshot scripts
     if (explode) apiRef.current.setExplode(explode);
     return () => {
       cancelAnimationFrame(raf); ro.disconnect(); controls.dispose();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      ambience.dispose(); ambienceRef.current = null;
       renderer.dispose(); host.removeChild(renderer.domElement); apiRef.current = null;
     };
   }, []);
@@ -337,15 +510,20 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   useEffect(() => { apiRef.current?.setAirflow(showAirflow); }, [showAirflow]);
   useEffect(() => { if (temps) apiRef.current?.setTemps(temps); }, [temps]);
   useEffect(() => { apiRef.current?.selectRack(sel, true); }, [sel]);
-  useEffect(() => { apiRef.current?.setSwitchFix(switchFix); }, [switchFix]);
+  useEffect(() => { apiRef.current?.setRemediation(remediation); }, [remediation]);
+  useEffect(() => { if (powerEvent > 0) apiRef.current?.triggerPowerEvent(); }, [powerEvent]);
+  useEffect(() => { apiRef.current?.setLayers(sceneLayers); }, [layersKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { apiRef.current?.setIssues(issues); }, [issues]);
-  // If the open issue's remediation clears it from the list (e.g. the patch-cable reseat flow), close its modal.
-  useEffect(() => { if (openIssueId && !issues.some((i) => i.id === openIssueId)) setOpenIssueId(null); }, [issues, openIssueId]);
+  // Once a remediation clears the open issue from the list, keep its modal up (with the closing note) while the flow
+  // sits in 'done'; close it when the flow returns to idle or the issue vanished for any other reason.
+  const openIsDone = remediation.phase === 'done' && remediation.issueId === openIssueId;
+  useEffect(() => { if (openIssueId && !issues.some((i) => i.id === openIssueId) && !openIsDone) setOpenIssueId(null); }, [issues, openIssueId, openIsDone]);
 
   const thermalOn = v === 'thermal', liquidOn = v === 'liquid';
-  const openIssue = issues.find((i) => i.id === openIssueId) ?? null;
+  const openIssue = issues.find((i) => i.id === openIssueId) ?? (openIsDone && openSnapshot?.id === openIssueId ? openSnapshot : null);
   const openIssueRack = openIssue ? RACK_BY_ID[openIssue.rackId] ?? null : null;
   const VIEW_LABEL: Record<RackView, string> = { visual: 'Visual', thermal: 'Thermal camera', liquid: 'Liquid cooling' };
+  const POWER_LABEL: Record<PowerPhase, string> = { utility: 'Utility', utility_lost: 'UTILITY LOST · transferring to UPS', on_battery: 'ON BATTERY · genset starting', generator: 'GENERATOR carrying load', utility_restored: 'Utility restored · retransfer complete' };
   const hottest = (() => { const a = apiRef.current; if (!a) return null; const t: number[] = temps ?? a.temps; const i = t.indexOf(Math.max(...t)); const s = a.slots[i]; if (!s) return null; const u = Math.round((s.y - s.h / 2 - 0.13) / 0.04445) + 1; return `HOTTEST U${u} · ${Math.round(s.h / 0.04445)}U · ${(19.5 + Math.min(1, t[i]) * 28.5).toFixed(1)} °C`; })();
 
   return (
@@ -355,7 +533,33 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         {(['visual', 'thermal', 'liquid'] as RackView[]).map((k) => (
           <button key={k} onClick={() => setView(k)} aria-pressed={v === k} style={{ appearance: 'none', border: 0, background: v === k ? '#eef0f4' : 'transparent', color: v === k ? '#16171b' : '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>{VIEW_LABEL[k]}</button>
         ))}
+        <span style={{ width: 1, background: 'rgba(255,255,255,0.12)', margin: '4px 3px' }} />
+        <button onClick={() => setLayersOpen((o) => !o)} aria-expanded={layersOpen} aria-controls="scene-items-panel" title="Choose which parts of the hall are shown" style={{ appearance: 'none', border: 0, background: layersOpen ? 'rgba(255,255,255,0.10)' : 'transparent', color: '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 10px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>Scene items {layersOpen ? '▴' : '▾'}</button>
+        <button onClick={() => setAudioOn((a) => !a)} aria-pressed={audioOn} title={audioOn ? 'Mute hall ambience' : 'Hall ambience: fan hum, alarms, badge reader'} style={{ appearance: 'none', border: 0, background: audioOn ? 'rgba(255,255,255,0.10)' : 'transparent', color: audioOn ? '#eef0f4' : '#aeb3bc', font: '500 12px/1 inherit', padding: '8px 10px', borderRadius: 6, cursor: 'pointer' }}>{audioOn ? '🔊' : '🔇'}</button>
       </div>
+      {layersOpen && (
+        <div ref={layersPanelRef} id="scene-items-panel" role="group" aria-label="Scene items" style={{ position: 'absolute', top: 60, left: 20, width: 300, maxHeight: 'calc(100% - 140px)', overflowY: 'auto', background: 'rgba(12,13,16,0.86)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: '10px 12px 12px', backdropFilter: 'blur(10px)', color: '#eef0f4', fontSize: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', scrollbarWidth: 'thin' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+            <b style={{ fontSize: 12.5 }}>Scene items</b>
+            <span style={{ display: 'flex', gap: 10, fontSize: 11 }}>
+              <button onClick={() => SCENE_LAYER_DEFS.forEach((d) => setLayer(d.id, true))} style={{ appearance: 'none', border: 0, background: 'transparent', color: '#8cc7ff', cursor: 'pointer', padding: 0 }}>all</button>
+              <button onClick={() => SCENE_LAYER_DEFS.forEach((d) => setLayer(d.id, false))} style={{ appearance: 'none', border: 0, background: 'transparent', color: '#8cc7ff', cursor: 'pointer', padding: 0 }}>none</button>
+              <button onClick={() => { setInternalLayers(DEFAULT_SCENE_LAYERS); onLayersChange?.(DEFAULT_SCENE_LAYERS); try { localStorage.removeItem('rackTwin.layers'); } catch { /* ignore */ } }} style={{ appearance: 'none', border: 0, background: 'transparent', color: '#8cc7ff', cursor: 'pointer', padding: 0 }}>defaults</button>
+            </span>
+          </div>
+          {Array.from(new Set(SCENE_LAYER_DEFS.map((d) => d.group))).map((grp) => (
+            <div key={grp} style={{ marginTop: 8 }}>
+              <div style={{ color: '#7c8290', fontSize: 10.5, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 4 }}>{grp}</div>
+              {SCENE_LAYER_DEFS.filter((d) => d.group === grp).map((d) => (
+                <label key={d.id} title={d.hint} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 2px', cursor: 'pointer', opacity: layers && d.id in layers ? 0.6 : 1 }}>
+                  <input type="checkbox" checked={sceneLayers[d.id]} disabled={!!layers && d.id in layers} onChange={(e) => setLayer(d.id, e.target.checked)} style={{ accentColor: '#5ab0ff' }} />
+                  <span style={{ flex: 1 }}>{d.label}</span>
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
       {thermalOn && (
         <>
           <div style={{ position: 'absolute', right: 20, top: 18, display: 'flex', flexDirection: 'column', gap: 8, color: '#eef0f4', font: '12px/1.3 "SF Mono", Menlo, monospace', letterSpacing: '0.04em', textShadow: '0 1px 2px #000' }}>
@@ -377,10 +581,16 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
-      <IssueDetail issue={openIssue} rack={openIssueRack} onClose={() => setOpenIssueId(null)} />
+      <IssueDetail issue={openIssue} rack={openIssueRack} onClose={() => setOpenIssueId(null)} remediation={remediation} remediationNote={remediationNote} onRemediate={onRemediate} />
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {powerPhase !== 'utility' && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, alignSelf: 'flex-start', padding: '5px 10px', borderRadius: 6, background: powerPhase === 'utility_restored' ? 'rgba(12,163,12,0.14)' : 'rgba(255,160,32,0.14)', border: `1px solid ${powerPhase === 'utility_restored' ? 'rgba(12,163,12,0.5)' : 'rgba(255,160,32,0.5)'}`, color: '#eef0f4', fontWeight: 600 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: powerPhase === 'utility_restored' ? '#0ca30c' : '#ffa020', boxShadow: '0 0 8px currentColor' }} />
+            {POWER_LABEL[powerPhase]}
+          </span>
+        )}
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open or close it{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open or close it · Scene items ▾ to show/hide parts of the hall{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
       </div>
     </div>
   );

@@ -46,7 +46,7 @@ export function buildNuc(ctx, n) {
     box('nuc_body', mats.nucBody, NUC_W, NUC_H, NUC_D, x, nucY, nucZ);
     box('nuc_lid', mats.nucLid, NUC_W + 0.002, 0.004, NUC_D + 0.002, x, nucY + NUC_H / 2 + 0.002, nucZ);
     plane('nuc_face', mats.nucFace, NUC_W - 0.004, NUC_H - 0.006, x, nucY, nucZ + NUC_D / 2 + 0.0005);
-    const l = cyl('activity_led', ledMat(0x2f8dff), 0.0008, 0.001, x, nucY + NUC_H * 0.4, nucZ + NUC_D / 2 + 0.0012, 'z', ctx.curG, 8); l.userData.phase = n + i * 1.3;
+    const l = cyl('activity_led', ledMat(0x2f8dff, 'heartbeat'), 0.0008, 0.001, x, nucY + NUC_H * 0.4, nucZ + NUC_D / 2 + 0.0012, 'z', ctx.curG, 8); l.userData.phase = n + i * 1.3;
     // blue patch lead: out of the rear-top port, arcing up and over the back wall (kept under the 3U ceiling)
     const yTop = nucY + NUC_H / 2, zRear = nucZ - NUC_D / 2;
     const pts = [[x, yTop - 0.02, zRear], [x, yTop + 0.012, zRear - 0.03], [x + 0.006, floorY + 0.122, trayRear + 0.012], [x + 0.008, floorY + 0.06, trayRear - 0.012]].map(p => new THREE.Vector3(...p));

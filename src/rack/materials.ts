@@ -42,7 +42,16 @@ export function createMaterials(THREE, T, anim) {
     lcd: M('lcd_display', { color: 0x1a2a20, roughness: 0.4, metalness: 0, emissive: 0x143a24, emissiveIntensity: 0.8 }),
     cyan: M('indicator_bar_cyan', { color: 0x0abfcf, emissive: 0x00d4e8, emissiveIntensity: 1.8, roughness: 0.3, metalness: 0.5, toneMapped: false }),
   };
-  const ledMat = (hex) => { const m = M('led_' + hex.toString(16), { color: 0x0a2012, emissive: hex, emissiveIntensity: 1.6, toneMapped: false }); anim.push(m); return m; };
+  // LED materials are pooled per (colour, pattern) — a handful of materials per pattern so the fleet doesn't blink in
+  // lockstep, but few enough that the baked replicas (merged per material) stay at a sane draw-call count. Each
+  // material carries its pattern + a seed for ledPatterns.ledIntensity; ServerRackTwin drives them every frame.
+  const LED_POOL = 6, ledPools = new Map();
+  const ledMat = (hex, pattern = 'activity') => {
+    const key = hex + ':' + pattern; let pool = ledPools.get(key);
+    if (!pool) { pool = { i: 0, mats: [] }; ledPools.set(key, pool); }
+    if (pool.mats.length < LED_POOL) { const m = M('led_' + hex.toString(16) + '_' + pattern + '_' + pool.mats.length, { color: 0x0a2012, emissive: hex, emissiveIntensity: 1.6, toneMapped: false }); m.userData.pattern = pattern; m.userData.seed = anim.length * 1.7 + pool.mats.length * 3.1; anim.push(m); pool.mats.push(m); return m; }
+    return pool.mats[pool.i++ % LED_POOL];
+  };
 
   return { mats, M, ledMat };
 }

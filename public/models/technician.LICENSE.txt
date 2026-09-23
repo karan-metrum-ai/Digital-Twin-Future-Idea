@@ -1,0 +1,10 @@
+technician.glb
+
+Mannequin mesh, rig and animation clips: Quaternius - Universal Animation Library (standard/free edition),
+https://quaternius.com/packs/universalanimationlibrary.html, via the glTF mirror at
+https://github.com/J-Ponzo/gltf-universal-animation-library. Licence: CC0 1.0 Universal (public domain).
+Re-packed to a single GLB with only the clips the twin uses (Idle_Loop, Walk_Loop, Jog_Fwd_Loop, Interact,
+Fixing_Kneeling, Crouch_Idle_Loop, Idle_Talking_Loop, PickUp_Table, A_TPose). Work wear (uniform colours, hi-vis band,
+hard hat) is added at runtime by src/rack/people/Technician.ts.
+
+Built with Metrum AI (Anthropic/Claude account).

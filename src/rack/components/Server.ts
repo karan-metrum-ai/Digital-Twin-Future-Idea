@@ -91,7 +91,7 @@ export function buildServer(ctx, n, u, kind, opt) {
       box('e3s_module', mats.driveSide, 0.094, 0.026, 0.006, x, bot + 0.017, zf);
       box('e3s_release_button', M('orange_release', { color: 0xe0702a, roughness: 0.5 }), 0.008, 0.008, 0.002, x - 0.03, bot + 0.017, zf + 0.004);
       box('e3s_button_ring', mats.dark, 0.011, 0.011, 0.0015, x - 0.03, bot + 0.017, zf + 0.0035);
-      const l = cyl('activity_led', ledMat(0x3dff6e), 0.001, 0.001, x - 0.03, bot + 0.026, zf + 0.0035, 'z', ctx.curG, 8); l.userData.phase = i;
+      const l = cyl('activity_led', ledMat(0x3dff6e, i % 3 === 0 ? 'power' : 'link'), 0.001, 0.001, x - 0.03, bot + 0.026, zf + 0.0035, 'z', ctx.curG, 8); l.userData.phase = i;
     }
     sidePanels(c.yc, c.h, true);
   }

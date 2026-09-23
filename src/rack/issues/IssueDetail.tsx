@@ -2,23 +2,29 @@
 // scene. It's the drill-down for whatever the door card can't fit — full title, device, age, summary and the raw
 // log excerpt — without bringing back a persistent list panel. Dismissed by its close button, the Escape key, or
 // clicking empty space in the scene (wired by the caller).
+// Copyright Metrum AI — built using Metrum AI's Anthropic/Claude account.
 import { useEffect } from 'react';
 import { INK } from '../liquid/charts';
 import { CATEGORY_LABEL, type RackInfo, type RackIssue, SEVERITY_COLOR, SEVERITY_LABEL } from './issues';
+import { RemediationSlider } from './RemediationSlider';
+import { REMEDIATION_IDLE, type RemediationState } from '../types';
 
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 const MONO = '"SF Mono", Menlo, Consolas, monospace';
-const CATEGORY_ICON: Record<string, string> = { storage: '▤', compute: '▣', network: '⇄' };
+const CATEGORY_ICON: Record<string, string> = { storage: '▤', compute: '▣', network: '⇄', facility: '⌂' };
 
 export interface IssueDetailProps {
   issue: RackIssue | null;
   rack: RackInfo | null;
   onClose: () => void;
+  remediation?: RemediationState;
+  remediationNote?: string | null;
+  onRemediate?: (issue: RackIssue) => void;
 }
 
 const age = (m: number) => (m < 60 ? `${m} min ago` : m < 24 * 60 ? `${Math.floor(m / 60)} h ${m % 60} min ago` : `${Math.floor(m / 1440)} d ago`);
 
-export function IssueDetail({ issue, rack, onClose }: IssueDetailProps) {
+export function IssueDetail({ issue, rack, onClose, remediation = REMEDIATION_IDLE, remediationNote = null, onRemediate }: IssueDetailProps) {
   useEffect(() => {
     if (!issue) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -62,6 +68,16 @@ export function IssueDetail({ issue, rack, onClose }: IssueDetailProps) {
           <span><b style={{ color: INK.secondary }}>Incident</b> · {issue.id}</span>
         </div>
       </div>
+
+      {issue.remediation && onRemediate && (
+        <RemediationSlider
+          descriptor={issue.remediation}
+          phase={remediation.issueId === issue.id ? remediation.phase : 'idle'}
+          busyElsewhere={remediation.phase !== 'idle' && remediation.issueId !== issue.id}
+          note={remediation.issueId === issue.id ? remediationNote : null}
+          onCommit={() => onRemediate(issue)}
+        />
+      )}
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px 14px', scrollbarWidth: 'thin' }}>
         <div style={{ color: INK.muted, fontSize: 10.5, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: 6 }}>Logs</div>

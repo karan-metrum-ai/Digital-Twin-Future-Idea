@@ -1,8 +1,10 @@
-// Demo harness for ServerRackTwin: view toggle, cover/airflow checkboxes, load-temp randomizer, and the
-// exploded-view slider with a live parts-count legend.
-import { useRef, useState } from 'react';
-import ServerRackTwin, { DEMO_ISSUES, FAULT_CABLE_ISSUE_ID, LIVE_RACK_ID, requestRemediation } from '../ServerRackTwin';
-import type { RackIssue, RackView, SwitchFixPhase } from './types';
+// Demo harness for ServerRackTwin: view toggle, cover/airflow checkboxes, load-temp randomizer, the exploded-view
+// slider with a live parts-count legend, and the generic remediation flow (slide-to-confirm in the issue modal ->
+// remediation API -> the scene dispatches a technician and acts out the fix -> issue clears).
+// Copyright Metrum AI — built using Metrum AI's Anthropic/Claude account.
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import ServerRackTwin, { DEMO_ISSUES, requestRemediation } from '../ServerRackTwin';
+import { REMEDIATION_IDLE, type RackIssue, type RackView, type RemediationState } from './types';
 
 const COMPONENT_KIND_LABEL: Record<string, string> = {
   server: 'Servers', blank: 'Blanking panels', switch: 'Network switches', patch: 'Patch panels',
@@ -17,59 +19,60 @@ export function Playground() {
   const [temps, setTemps] = useState<number[] | undefined>(undefined);
   const [explode, setExplode] = useState(0);
   const [items, setItems] = useState<{ kind: string; label: string }[]>([]);
-  // Remediation flow for the unseated patch cable: slide-to-confirm -> API call -> scene plays the reseat -> issue clears.
   const [issues, setIssues] = useState<RackIssue[]>(DEMO_ISSUES);
-  const [switchFix, setSwitchFix] = useState<SwitchFixPhase>('idle');
-  const [slide, setSlide] = useState(0);
-  const [fixNote, setFixNote] = useState<string | null>(null);
-  const snapBack = useRef<number | null>(null);
-  const commitSlide = async () => {
-    if (switchFix !== 'idle') return;
-    if (slide < 96) { // released early: ease the knob back to the start
-      if (snapBack.current) cancelAnimationFrame(snapBack.current);
-      const step = () => setSlide((v) => { const nv = v * 0.72; if (nv < 1) return 0; snapBack.current = requestAnimationFrame(step); return nv; });
-      snapBack.current = requestAnimationFrame(step); return;
-    }
-    setSlide(100); setSwitchFix('requested'); setFixNote('Dispatching reseat…');
+  const [remediation, setRemediation] = useState<RemediationState>(REMEDIATION_IDLE);
+  const [note, setNote] = useState<string | null>(null);
+  const idleTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (idleTimer.current) window.clearTimeout(idleTimer.current); }, []);
+
+  const onRemediate = async (issue: RackIssue) => {
+    const d = issue.remediation;
+    if (!d || remediation.phase !== 'idle') return;
+    setNote(null); setRemediation({ issueId: issue.id, phase: 'requested' });
     try {
-      const res = await requestRemediation({ rackId: LIVE_RACK_ID, issueId: FAULT_CABLE_ISSUE_ID, action: 'reseat_patch_cable', device: 'sw-x01-core-48p', port: 9 });
-      if (!res.ok || res.linkState !== 'up') throw new Error(res.message);
-      setFixNote(`${res.performedBy}: ${res.message}`); setSwitchFix('confirmed');
-    } catch (e) { setFixNote(`Remediation failed: ${(e as Error).message}`); setSwitchFix('idle'); setSlide(0); }
+      const res = await requestRemediation({ rackId: issue.rackId, issueId: issue.id, action: d.action, device: issue.device, fru: d.fru, port: d.port, resultMessage: d.doneMessage });
+      if (!res.ok || (res.linkState && res.linkState !== 'up')) throw new Error(res.message);
+      setNote(`${res.performedBy} · ticket ${res.ticket} · ${new Date(res.completedAt).toLocaleTimeString()}`);
+      setRemediation({ issueId: issue.id, phase: 'confirmed' });
+    } catch (e) {
+      setNote(`Remediation failed: ${(e as Error).message}`); setRemediation(REMEDIATION_IDLE);
+    }
   };
-  const onFixDone = () => { setSwitchFix('done'); setIssues((list) => list.filter((i) => i.id !== FAULT_CABLE_ISSUE_ID)); setFixNote('Link restored · INC-4802 closed'); };
-  const faultOpen = issues.some((i) => i.id === FAULT_CABLE_ISSUE_ID);
+  const onRemediationDone = (issueId: string) => {
+    setRemediation({ issueId, phase: 'done' });
+    setIssues((list) => list.filter((i) => i.id !== issueId));
+    if (idleTimer.current) window.clearTimeout(idleTimer.current);
+    idleTimer.current = window.setTimeout(() => setRemediation(REMEDIATION_IDLE), 4000);
+  };
+
+  const [powerEvent, setPowerEvent] = useState(0);
+  const [powerBusy, setPowerBusy] = useState(false);
   const randomize = () => setTemps(Array.from({ length: 20 }, () => 0.3 + Math.random() * 0.7));
   const counts = items.reduce<Record<string, number>>((acc, it) => { acc[it.kind] = (acc[it.kind] || 0) + 1; return acc; }, {});
+  const btn: CSSProperties = { background: '#1e2026', color: '#eef0f4', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' };
   return (
     <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr', height: '100vh', background: '#0f1013', color: '#c9ccd3', fontFamily: '"Helvetica Neue", Helvetica, sans-serif', fontSize: 12 }}>
       <div style={{ display: 'flex', gap: 16, alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={covers} onChange={(e) => setCovers(e.target.checked)} /> Front covers</label>
         <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={airflow} onChange={(e) => setAirflow(e.target.checked)} /> Airflow &amp; heat</label>
-        <button onClick={randomize} style={{ background: '#1e2026', color: '#eef0f4', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' }}>Randomize load temps</button>
-        <button onClick={() => setTemps(undefined)} style={{ background: 'transparent', color: '#aeb3bc', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' }}>Reset</button>
+        <button onClick={randomize} style={btn}>Randomize load temps</button>
+        <button onClick={() => setTemps(undefined)} style={{ ...btn, background: 'transparent', color: '#aeb3bc' }}>Reset</button>
         <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', marginLeft: 8 }}>
           Explode view
           <input type="range" min={0} max={100} value={Math.round(explode * 100)} onChange={(e) => setExplode(Number(e.target.value) / 100)} style={{ width: 140 }} />
           <span style={{ opacity: 0.7, width: 32, display: 'inline-block' }}>{Math.round(explode * 100)}%</span>
         </label>
-        <div style={{ marginLeft: 16, display: 'inline-flex', alignItems: 'center', gap: 10, padding: '4px 10px 4px 12px', borderRadius: 8, border: `1px solid ${switchFix === 'done' ? 'rgba(12,163,12,0.55)' : 'rgba(216,36,28,0.55)'}`, background: switchFix === 'done' ? 'rgba(12,163,12,0.10)' : 'rgba(216,36,28,0.10)' }} title="INC-4802 · X-01 U39 · Ethernet1/9 patch cable unseated">
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: switchFix === 'done' ? '#0ca30c' : '#d8241c', boxShadow: switchFix === 'idle' ? '0 0 8px #d8241c' : 'none' }} />
-          <span style={{ fontWeight: 600, color: '#eef0f4', whiteSpace: 'nowrap' }}>{switchFix === 'done' ? 'Switch port 9 · link up' : 'Switch port 9 · cable unseated'}</span>
-          {switchFix === 'idle' && faultOpen && (
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }} aria-label="Slide to reseat the patch cable">
-              <span style={{ opacity: 0.75 }}>slide to reseat →</span>
-              <input type="range" min={0} max={100} value={Math.round(slide)} onChange={(e) => setSlide(Number(e.target.value))} onPointerUp={commitSlide} onKeyUp={(e) => { if (e.key === 'Enter' || e.key === 'End') { setSlide(100); void commitSlide(); } }} style={{ width: 150, accentColor: slide >= 96 ? '#0ca30c' : '#d8241c' }} />
-            </label>
-          )}
-          {switchFix === 'requested' && <span style={{ opacity: 0.8 }}>⟳ waiting for remediation API…</span>}
-          {switchFix === 'confirmed' && <span style={{ opacity: 0.8 }}>reseating connector…</span>}
-          {fixNote && switchFix !== 'requested' && switchFix !== 'confirmed' && <span style={{ opacity: 0.7, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fixNote}</span>}
-        </div>
+        <button onClick={() => setPowerEvent((n) => n + 1)} disabled={powerBusy} title="Drop the utility feed: UPS carries the hall, genset auto-starts, then retransfer" style={{ ...btn, marginLeft: 8, borderColor: 'rgba(255,160,32,0.45)', opacity: powerBusy ? 0.5 : 1, cursor: powerBusy ? 'default' : 'pointer' }}>⚡ Simulate utility loss</button>
+        <span style={{ marginLeft: 16, opacity: 0.75 }}>
+          {issues.length} open alarm{issues.length === 1 ? '' : 's'}
+          {remediation.phase !== 'idle' && <> · <b style={{ color: '#eef0f4' }}>{remediation.issueId}</b> {remediation.phase === 'requested' ? '⟳ dispatching' : remediation.phase === 'confirmed' ? 'technician working' : '✓ closed'}</>}
+        </span>
         <span style={{ marginLeft: 'auto', opacity: 0.7 }}>view: {view}</span>
       </div>
       <div style={{ position: 'relative', height: '100%' }}>
-        <ServerRackTwin view={view} onViewChange={setView} showCovers={covers} showAirflow={airflow} temps={temps} explode={explode} onItems={setItems} issues={issues} switchFix={switchFix} onSwitchFixDone={onFixDone} />
+        <ServerRackTwin view={view} onViewChange={setView} showCovers={covers} showAirflow={airflow} temps={temps} explode={explode} onItems={setItems}
+          issues={issues} remediation={remediation} onRemediate={onRemediate} onRemediationDone={onRemediationDone} remediationNote={note}
+          powerEvent={powerEvent} onPowerPhase={(p) => setPowerBusy(p !== 'utility')} />
         {explode > 0.02 && (
           <div style={{ position: 'absolute', right: 20, bottom: 18, background: 'rgba(12,13,16,0.72)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8, padding: '10px 14px', color: '#eef0f4', font: '12px/1.7 inherit', letterSpacing: '0.02em', backdropFilter: 'blur(8px)' }}>
             <b style={{ display: 'block', marginBottom: 4 }}>Components · {items.length}</b>

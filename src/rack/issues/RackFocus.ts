@@ -207,16 +207,20 @@ export function buildRackFocus(THREE, rackBox, issues) {
   // rack's spill runs brighter so the eye lands on it after the camera arrives.
   const pulse = (severity, t, phase) => severity === 'critical' ? 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 2.6 + phase))
     : severity === 'major' ? 0.78 + 0.22 * (0.5 + 0.5 * Math.sin(t * 1.5 + phase)) : 0.85;
+  // The card of an issue whose remediation is being acted out fades back so the FRU proxy in front of it reads.
+  let busyIssueId = null;
+  const setPlateBusy = (issueId, on) => { busyIssueId = on ? issueId : busyIssueId === issueId ? null : busyIssueId; };
+  const plateFor = (issueId) => plates.find((p) => p.mesh.userData.issueId === issueId)?.mesh ?? null;
   const tick = (t) => {
-    plates.forEach((p, i) => { const base = selectedId == null || p.rackId === selectedId ? 1 : 0.78; p.mesh.material.opacity = base * pulse(p.severity, t, i * 0.9); });
+    plates.forEach((p, i) => { const base = p.mesh.userData.issueId === busyIssueId ? 0.35 : selectedId == null || p.rackId === selectedId ? 1 : 0.78; p.mesh.material.opacity = base * pulse(p.severity, t, i * 0.9); });
     beacons.forEach((b, i) => { const k = pulse(b.severity, t, i * 1.3); b.mesh.material.emissiveIntensity = 0.9 + 1.4 * k; b.halo.material.opacity = 0.34 * k; });
     if (outline.visible) { const k = 0.5 + 0.5 * Math.sin(t * 2.2); outlineMat.opacity = 0.72 + 0.28 * k; outlineGlowMat.opacity = 0.10 + 0.10 * k; }
   };
 
   /** Objects a click should test first — the plates and beacons sit proud of the rack surfaces. */
-  const pickables = () => [...pickable, ...nameplates.map((np) => np.sprite)];
+  const pickables = () => (g.visible ? [...pickable, ...nameplates.map((np) => np.sprite)] : []); // hidden cards must not be clickable
 
-  g.userData = { select, setIssues, tick, pickables, get selectedId() { return selectedId; } };
+  g.userData = { select, setIssues, tick, pickables, rackGroup, plateFor, setPlateBusy, plateHeightM, deviceUnits, get selectedId() { return selectedId; } };
   return g;
 }
 

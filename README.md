@@ -38,6 +38,61 @@ The app boots the `Playground` demo from `src/rack/Playground.tsx`:
 - Exploded view — pulls every component (servers, blanks, switches, patch panels, cable managers, PDUs, NUC) apart, with a live parts-count legend
 - Download GLB export
 
+### Incidents and remediation
+
+Every rack in the hall carries its open alarms ON the rack — a notification card over the affected device's front
+face plus a roof beacon (worst severity) — never as floating badges. Clicking a card opens the issue modal on the
+right edge (title, device, age, summary, raw logs) and, for any issue that carries a `remediation` descriptor
+(`src/rack/issues/issues.ts` — all twelve demo incidents do), a slide-to-dispatch control. Committing it:
+
+1. calls the remediation API (`remediationApi.ts` — a real POST when `VITE_REMEDIATION_URL` is set, otherwise a
+   mocked 1.4–2 s round trip) and flies the camera to a front-right shot of the rack;
+2. dispatches the technician (`people/Technician.ts`): they badge in at the staff door, walk the cold-aisle and
+   end-of-row corridors (`people/paths.ts` — axis-aligned routes that never cross a rack row, CDU or floor PDU),
+   and kneel or reach to the device's height;
+3. acts out the fix on the rack (`issues/RemediationScene.ts`): the interactive rack's unseated patch cable gets the
+   staged RJ45 reseat (`cabling/reseatAnimation.ts`); every other incident — including the nine on baked replica
+   racks that have no per-component meshes — gets a proxy FRU swap (`issues/fruSwapAnimation.ts`: drive sled, GPU
+   sled, SFP, PSU, fan, DIMM tray, patch plug, QD coupling or blanking panel drawn out, held, pushed home, fault LED
+   red → green) or, for software-only fixes, a console strip along the card; then
+4. the card and beacon clear, the leak-zone / thermal state it drove is released, and the technician walks out.
+
+### Facility plant
+
+- **Power** (`environment/PowerPlant.ts`): A/B busway rails (orange / blue) with a tap-off box and two drop cords
+  over every rack, an end-of-row floor PDU per row (breaker panel, feed LEDs, load LCD), a UPS bank along the back
+  wall and a standby genset in the corner. **⚡ Simulate utility loss** (`power/PowerEvent.ts`) plays the scripted
+  event: lighting flickers to emergency level and the red strips + horn/strobes come up, UPS LCDs go to battery,
+  the genset beacon spins and picks up the load, lighting returns, then retransfer to utility (~18 s).
+- **Life safety** (`environment/LifeSafety.ts`): clean-agent cylinder bank with roof discharge nozzles, VESDA
+  aspirating detector with its sampling pipe, manual pull station and horn/strobes.
+- **Leak detection** (`environment/LeakDetection.ts`): sensing rope under both rows' coolant headers and around each
+  CDU, with a per-row leak controller whose zone goes WET/red while a facility incident is open (INC-4825).
+- **Technician** (`people/Technician.ts`): a rigged, skinned humanoid — the CC0 mannequin from Quaternius' Universal
+  Animation Library (`public/models/technician.glb`, Idle / Walk / Interact / Fixing-Kneeling clips) driven by an
+  `AnimationMixer`, dressed at runtime in a navy uniform, hi-vis band and hard hat. Does rounds of the aisles between
+  jobs; a dispatch pulls them off the rounds from wherever they are.
+- **Staff entrance** (`environment/Environment.ts`): steel door with push bar and window, badge reader (flashes blue
+  when the technician badges in) and EXIT sign.
+- **NOC wall** (`environment/NocWall.ts`): 2×2 video wall over an operator desk, redrawn at 1 Hz with live PUE, IT
+  load, coolant supply/ΔT, open alarms by severity, power source and an IT-load sparkline.
+- **Ambience**: idle LED patterns per device (`ledPatterns.ts` — activity flicker, power steady, link strobe with
+  dark ports, heartbeat), dimmed or dropped by the power event; and a synthesised sound bed (`audio/Ambience.ts`:
+  fan hum + moving air scaled by camera proximity, genset rumble, alarm/badge/latch chirps) behind the 🔇/🔊 toggle
+  beside the view tabs — off by default, remembered in `localStorage`.
+
+### Scene items
+
+**Scene items ▾** (beside the view tabs) lists every optional piece of fit-out with a checkbox — technician, alarm cards
+& beacons, NOC wall, leak rope, overhead trays, staff door, busway, floor PDUs, UPS bank, genset, clean-agent
+cylinders, VESDA, pull station & strobes — grouped by People / Monitoring / Facility / Power / Life safety, with
+`all` / `none` / `defaults` shortcuts. Choices are remembered per browser (`localStorage` key `rackTwin.layers`); the
+genset and the agent cylinders are off by default. Embedders can pin items with the `layers` prop (those checkboxes
+show disabled) and listen with `onLayersChange`; the definitions live in `SCENE_LAYER_DEFS` (`src/rack/types.ts`).
+
+Append `?debug` to the URL to expose `window.__rackTwin` (the scene's imperative API — `selectRack`, `flyTo`,
+`setCamera`, `setRemediation`, `triggerPowerEvent`, …) for tooling and screenshot scripts.
+
 ## Code structure
 
 `src/ServerRackTwin.tsx` is a thin React component (mounts the three.js scene, wires up props/UI). The
@@ -62,9 +117,24 @@ src/rack/
     VerticalPdu.ts                   Full-height rear PDU
     Nuc.ts                            3U shelf with eight mini PCs on edge + patch leads
   cabling/wireCabling.ts      Patch/power/network cable routing pass
-  environment/                Floor, ladder + lights, cooling grill
+  environment/                Floor, walls + staff door, lights, cooling grill
     RackRow.ts                Two-row hot-aisle layout + baked rack replicas
     RackAirflow.ts            Heat/vapor particle sims instanced at every replica rack
+    PowerPlant.ts             Busway + drop cords, floor PDUs, UPS bank, genset (merged static + live LCDs/LEDs)
+    LifeSafety.ts             Clean-agent suppression, VESDA, pull station, horn/strobes
+    LeakDetection.ts          Leak rope under the coolant headers + per-row leak controller
+    NocWall.ts                NOC video wall + operator desk, redrawn from live twin state
+  issues/                     Rack registry, demo incidents, on-rack alarm visuals, issue modal
+    issues.ts                 RACKS / DEMO_ISSUES with per-issue remediation descriptors
+    RackFocus.ts              Alarm cards + roof beacons + selection hairline, rack picking
+    IssueDetail.tsx           Right-edge issue modal; RemediationSlider.tsx is its slide-to-dispatch control
+    RemediationScene.ts       Routes an in-flight remediation to the right on-rack act
+    fruSwapAnimation.ts       Proxy FRU swap / console-strip animations (work on baked replica racks)
+    remediationApi.ts         Remediation API client (real POST or mocked round trip)
+  people/                     Technician avatar (Technician.ts) + corridor routing (paths.ts)
+  power/PowerEvent.ts         Scripted utility-loss state machine (pure TS)
+  audio/Ambience.ts           Web Audio sound bed + chirps
+  ledPatterns.ts              Idle LED behaviour per device kind, gated by the power state
   thermal/                    Airflow particle sim + thermal camera shader
   liquid/                     Liquid cooling mode
     LiquidLoop.ts             Headers/drops/CDU per row + manifolds/hoses/flow on every rack (baked+merged for replicas)
@@ -79,3 +149,5 @@ over free variables, so components stay independently readable/editable while sh
 materials, and mesh-primitive helpers.
 
 Original export sources remain under `export/` for reference.
+
+Built with Metrum AI (Anthropic/Claude account). © Metrum AI.
