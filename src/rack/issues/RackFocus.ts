@@ -229,14 +229,17 @@ export function buildRackFocus(THREE, rackBox, issues) {
  * was an alarm card specifically (not a beacon or bare rack surface). Tests the alarm plates/beacons, the baked
  * replica groups (named `rack_replica_<row><index>`) and the interactive rack.
  */
-export function pickHit(raycaster, focus, replicas, liveRack, liveRackId) {
+export function pickHit(raycaster, focus, replicas, liveRack, liveRackId, boxFor?) {
   const hitsMarker = raycaster.intersectObjects(focus.userData.pickables(), false);
   if (hitsMarker.length) {
     const o = hitsMarker[0].object;
     return { rackId: o.userData.rackId ?? null, issueId: o.userData.issueId ?? null };
   }
   const targets = [...replicas.children, liveRack];
-  const hits = raycaster.intersectObjects(targets, true);
+  // Optional coarse pass: `boxFor(target)` returns a world Box3 (or null to always test) — only racks whose box the
+  // ray crosses are descended into, which keeps hover picking off the interactive rack's thousands of meshes.
+  const tested = boxFor ? targets.filter((o) => { const b = boxFor(o); return !b || raycaster.ray.intersectsBox(b); }) : targets;
+  const hits = tested.length ? raycaster.intersectObjects(tested, true) : [];
   if (!hits.length) return { rackId: null, issueId: null };
   let o = hits[0].object;
   while (o && !targets.includes(o)) o = o.parent;

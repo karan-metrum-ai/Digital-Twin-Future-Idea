@@ -33,6 +33,7 @@ import { buildNocWall } from './rack/environment/NocWall';
 import { createAmbience, type Ambience } from './rack/audio/Ambience';
 import { ledIntensity } from './rack/ledPatterns';
 import { applySilhouetteShadows, disableShadows, configureKeyShadow } from './rack/shadowPolicy';
+import { mergeItemStatics } from './rack/mergeStatics';
 import { REMEDIATION_IDLE, DEFAULT_SCENE_LAYERS, SCENE_LAYER_DEFS, type Slot, type RackView, type ServerRackTwinProps, type RemediationState, type SceneLayers } from './rack/types';
 
 export type { Slot, RackView, ServerRackTwinProps, RackIssue, RackInfo, IssueCategory, IssueSeverity, Remediation, RemediationAction, FruKind, RemediationPhase, RemediationState, SceneLayer, SceneLayers } from './rack/types';
@@ -90,14 +91,20 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
 
   useEffect(() => {
     const host = hostRef.current; if (!host) return;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: false });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+    // Adaptive resolution: start at the device ratio (capped) and let the frame-time governor in the render loop step
+    // it down toward 1.0 on a struggling GPU, back up once the frames come easily again (see `dpr` below).
+    const dprCap = Math.min(window.devicePixelRatio || 1, 1.5); let dpr = dprCap;
+    renderer.setPixelRatio(dpr);
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
+    // The shadow pass is re-rendered on demand rather than every frame: every frame while something that casts is
+    // moving (technician walking, a door swinging, the exploded view separating), otherwise every 2nd/3rd frame.
+    renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
     host.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 500);
-    const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = 0.08;
+    const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.dampingFactor = 0.1;
     controls.minDistance = 0.45; controls.maxDistance = 15;
     controls.minPolarAngle = 0.08; controls.maxPolarAngle = Math.PI / 2 - 0.04; // keep the lens above the floor
     // Keep the orbit target inside the room so pan + zoom cannot walk the camera through a wall.
@@ -121,15 +128,18 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const replicas = buildRackReplicas(THREE, rack); disableShadows(replicas); scene.add(replicas);
     // Rack footprint (still at the origin) — the selection outline is sized from it and re-posed onto whichever rack is picked.
     const rackBox = new THREE.Box3().setFromObject(rack);
+    // With the replicas baked from the fully detailed rack, collapse the interactive rack's small decorative parts into
+    // one mesh per material per item (mergeStatics.ts) — roughly halves its draw calls with no visible change.
+    const mergeStats = mergeItemStatics(THREE, rack);
     const env = buildEnvironment(THREE); scene.add(env);
     // The technician waits out of sight behind the staff door until a remediation dispatches them.
     const tech = buildTechnician(THREE); tech.userData.reset(TECH_SPAWN.x, TECH_SPAWN.z); applySilhouetteShadows(tech); scene.add(tech);
     // Overhead cable-tray / wire-framing grid hung off the roof above both rows (static, merged per material).
     const overhead = buildOverheadCabling(THREE); disableShadows(overhead); scene.add(overhead);
-    // Electrical plant: busway + drop cords over every rack, end-of-row PDUs, UPS bank, standby genset — and the
+    // Electrical plant: busway + drop cords over every rack, end-of-row PDUs, UPS bank — and the
     // scripted utility-loss event that plays through them (lighting, LCDs, LEDs, beacon).
     const power = buildPowerPlant(THREE); scene.add(power);
-    // Fire suppression + VESDA + horn/strobes, and the leak-detection rope under both rows' coolant headers.
+    // VESDA smoke detection, and the leak-detection rope under both rows' coolant headers.
     const life = buildLifeSafety(THREE); scene.add(life);
     const leak = buildLeakDetection(THREE); scene.add(leak);
     const noc = buildNocWall(THREE); scene.add(noc);
@@ -150,7 +160,6 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       hemi.intensity = BASE_LIGHT.hemi * kk; key.intensity = BASE_LIGHT.key * kk; fill.intensity = BASE_LIGHT.fill * kk; front.intensity = BASE_LIGHT.front * kk;
       env.userData.lamps.material.emissiveIntensity = BASE_LIGHT.lamp * k;
       env.userData.emergency.emissiveIntensity = 2.6 * emergency;
-      life.userData.setAlarm(source === 'none' || source === 'battery');
       power.userData.setState({ source, upsMode, upsPct, upsMin, genRunning });
     };
     // On-rack alarm plates/beacons + door-hairline selection for the issues panel; rack picking maps clicks back to rack ids.
@@ -247,7 +256,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       const hop = dist < 1.5; // small nudge around the same rack: no need to climb
       const apexY = hop ? Math.max(p0.y, p2.y) + 0.15 : Math.max(p0.y, p2.y, ARC_CLEAR_Y) + Math.min(1.0, dist * 0.08);
       const p1 = clampToRoom(new THREE.Vector3((p0.x + p2.x) / 2, 2 * apexY - (p0.y + p2.y) / 2, (p0.z + p2.z) / 2)); // Bezier midpoint == apexY
-      const dur = THREE.MathUtils.clamp(0.9 + dist * 0.18, 1.0, 2.4);
+      const dur = THREE.MathUtils.clamp(0.7 + dist * 0.14, 0.8, 1.8);
       fly = { p0, p1, p2, t0, t1, start: performance.now() / 1000, dur };
     };
     const easeInOut = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2);
@@ -261,7 +270,17 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
     // Which rack (if any), and which issue card specifically, is under the pointer — any of the ten replicas, the
     // interactive rack, or an alarm plate/beacon.
-    const hitUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickHit(raycaster, focus, replicas, rack, LIVE_RACK_ID) as { rackId: string | null; issueId: string | null }; };
+    // World-space bounds per pickable rack so a hover/click only descends into the racks whose box the ray actually
+    // crosses (the interactive rack alone is thousands of meshes). Built on first use, once everything is placed; the
+    // live rack's box is padded for its swinging door and skipped altogether while the exploded view is open.
+    const pickBoxes = new Map<THREE.Object3D, THREE.Box3>();
+    const pickBoxFor = (o: THREE.Object3D) => {
+      if (o === rack && explodeVal > 0.02) return null;
+      let b = pickBoxes.get(o);
+      if (!b) { b = new THREE.Box3().setFromObject(o).expandByScalar(o === rack ? 0.75 : 0.05); pickBoxes.set(o, b); }
+      return b;
+    };
+    const hitUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickHit(raycaster, focus, replicas, rack, LIVE_RACK_ID, pickBoxFor) as { rackId: string | null; issueId: string | null }; };
     // Select a rack: outline it and (optionally) fly the camera to its front three-quarter.
     const selectRackInScene = (id: string | null, flyCamera: boolean) => {
       focus.userData.select(id);
@@ -295,9 +314,21 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
-    let raf = 0; const t0 = performance.now(); let lastT = 0; let liquidFrame = 0;
+    let raf = 0; const t0 = performance.now(); let lastT = 0; let liquidFrame = 0, frame = 0;
+    // Frame-time governor for the adaptive pixel ratio: a smoothed frame time that sits above ~25 ms for a second
+    // steps the resolution down a notch; one that sits comfortably under the vsync period for a few seconds steps it
+    // back up. Hysteresis between the two bands keeps it from hunting.
+    let ftAvg = 1 / 60, slowFor = 0, fastFor = 0;
+    const DPR_STEP = 0.25, DPR_MIN = 1.0;
+    const setDpr = (v: number) => { dpr = v; renderer.setPixelRatio(dpr); fit(); slowFor = 0; fastFor = 0; };
     const loop = () => {
-      const t = (performance.now() - t0) / 1000; const dt = Math.min(0.25, t - lastT); lastT = t;
+      const t = (performance.now() - t0) / 1000; const dt = Math.min(0.25, t - lastT); lastT = t; frame++;
+      if (dt < 0.1) { // ignore tab-hidden gaps
+        ftAvg += (dt - ftAvg) * 0.1;
+        if (ftAvg > 1 / 40) { slowFor += dt; fastFor = 0; } else if (ftAvg < 1 / 57) { fastFor += dt; slowFor = 0; } else { slowFor = 0; fastFor = 0; }
+        if (slowFor > 1 && dpr > DPR_MIN + 1e-3) setDpr(Math.max(DPR_MIN, dpr - DPR_STEP));
+        else if (fastFor > 4 && dpr < dprCap - 1e-3) setDpr(Math.min(dprCap, dpr + DPR_STEP));
+      }
       heat.userData.tick(t, renderer.getPixelRatio()); vapor.userData.tick(t, renderer.getPixelRatio()); airflowReplicas.userData.tick(t, renderer.getPixelRatio()); thermal.tick(t);
       if (liquidMode) {
         const loopState = loopSim.step(dt); liquid.userData.setTelemetry(loopState.latest);
@@ -312,20 +343,27 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       // Disconnected patch cable: sharp red 'beep' (fast rise, quick decay) rather than a soft sine, so it reads as an alarm.
       if (reseat) { reseat.tick(t); if (reseat.pulsing) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; } }
       remScene.userData.tick(t); tech.userData.tick(t, dt); env.userData.tick(t);
-      if (powerEvt.active) { powerEvt.tick(t); applyPower(); } power.userData.tick(t); life.userData.tick(t); leak.userData.tick(t);
-      explodeItems.forEach((it) => it.group.position.lerp(it.target, 0.14));
+      if (powerEvt.active) { powerEvt.tick(t); applyPower(); } power.userData.tick(t); leak.userData.tick(t);
+      const kExplode = 1 - Math.exp(-10 * dt); let explodeMoving = false;
+      explodeItems.forEach((it) => { if (it.group.position.distanceToSquared(it.target) > 1e-8) { explodeMoving = true; it.group.position.lerp(it.target, kExplode); } });
       if (fly) {
         const u = Math.min(1, (performance.now() / 1000 - fly.start) / fly.dur), e = easeInOut(u);
         bez(fly.p0, fly.p1, fly.p2, e, camera.position);
         controls.target.lerpVectors(fly.t0, fly.t1, e);
         if (u >= 1) fly = null;
       }
+      let doorMoving = false;
       if (doors) {
-        if (doors.hingeTargetY !== undefined) doors.hinge.rotation.y += (doors.hingeTargetY - doors.hinge.rotation.y) * 0.045;
-        if (doors.rdTargetZ !== undefined) doors.rd.position.z += (doors.rdTargetZ - doors.rd.position.z) * 0.045;
+        const kDoor = 1 - Math.exp(-4.5 * dt);
+        if (doors.hingeTargetY !== undefined) { const d = doors.hingeTargetY - doors.hinge.rotation.y; if (Math.abs(d) > 1e-3) { doorMoving = true; doors.hinge.rotation.y += d * kDoor; } }
+        if (doors.rdTargetZ !== undefined) { const d = doors.rdTargetZ - doors.rd.position.z; if (Math.abs(d) > 1e-4) { doorMoving = true; doors.rd.position.z += d * kDoor; } }
       }
       controls.update();
       clampToRoom(camera.position); clampToRoom(controls.target, 0.35);
+      // Shadow pass: every frame while a caster is on the move, else every 2nd frame while the technician is working
+      // at a rack (arms moving), else every 3rd frame (idle breathing only).
+      const casterMoving = tech.userData.walking || doorMoving || explodeMoving || env.userData.doorMoving;
+      renderer.shadowMap.needsUpdate = casterMoving || (frame % (tech.userData.pose !== 'idle' ? 2 : 3) === 0);
       renderer.render(scene, camera); raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -363,17 +401,19 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       const job = techJob;
       ambience.chirp('badge');
       tech.userData.setPose('idle');
-      tech.userData.walkTo(path).then(() => {
+      // Head turns to the rack on the way in; the right hand rises toward it over the last stretch (Technician.ts).
+      tech.userData.lookAt({ x: info.x, z: info.z });
+      tech.userData.walkTo(path, { reach: true }).then(() => {
         if (techJob !== job) return;
         tech.userData.face(stand.yaw);
         job.arrived = true; const act = job.pendingAct; job.pendingAct = null; act?.();
       });
     };
     const techWorkAt = (u: number) => tech.userData.setPose(u <= 14 ? 'kneel' : 'reach');
-    const resumePatrol = () => { const p = techPos(); techJob = null; patrolFrom(nearestPatrolIndex(p)); };
+    const resumePatrol = () => { const p = techPos(); techJob = null; tech.userData.lookAt(null); patrolFrom(nearestPatrolIndex(p)); };
     const techLeave = () => {
       const job = techJob; if (!job) return;
-      tech.userData.setPose('idle');
+      tech.userData.setPose('idle'); tech.userData.lookAt(null);
       // Step back from the rack to the corridor point they came in on, then pick the rounds back up from there.
       const back = job.path.length >= 2 ? [techPos(), job.path[job.path.length - 2]] : [techPos()];
       tech.userData.walkTo(back).then(() => { if (techJob === job) resumePatrol(); });
@@ -405,7 +445,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         liquid.userData.setExploded(t);
         (rack.userData.cableLikeObjects as THREE.Object3D[]).forEach((o) => { o.visible = t < 0.04; });
         const labelAlpha = Math.min(1, Math.max(0, (t - 0.25) / 0.35)); // names appear once the stack has opened up
-        if (t > 0.01) ensureLabels().forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; });
+        if (t > 0.01 || labels) ensureLabels().forEach((sp) => { sp.visible = labelAlpha > 0; (sp.material as THREE.SpriteMaterial).opacity = labelAlpha; }); // once created, labels must also be hidden on a jump straight back to 0
         explodeVal = t; updateDoorTargets();
       },
       setDoorOpen(on: boolean) { doorOpen = on; updateDoorTargets(); },
@@ -464,8 +504,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setLayers(l: SceneLayers) {
         tech.visible = l.technician; focus.visible = l.alarmCards; overhead.visible = l.overheadCabling; noc.visible = l.nocWall; leak.visible = l.leakDetection;
         env.userData.door.visible = l.staffDoor;
-        power.userData.setVisible('busway', l.busway); power.userData.setVisible('pdu', l.floorPdus); power.userData.setVisible('ups', l.ups); power.userData.setVisible('genset', l.genset);
-        life.userData.setVisible('suppression', l.fireSuppression); life.userData.setVisible('vesda', l.vesda); life.userData.setVisible('alarms', l.alarmDevices);
+        power.userData.setVisible('busway', l.busway); power.userData.setVisible('pdu', l.floorPdus); power.userData.setVisible('ups', l.ups);
+        life.userData.setVisible('vesda', l.vesda);
       },
       /** Run the scripted utility-loss event (no-op while one is already playing). */
       triggerPowerEvent() { const ok = powerEvt.trigger(sceneTime()); if (ok) applyPower(); return ok; },
@@ -479,6 +519,18 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setIssues(list: any[]) { focus.userData.setIssues(list); applyLeakZones(list); },
       selectedRack() { return focus.userData.selectedId as string | null; },
       cameraPos() { return camera.position.toArray(); },
+      /** Render statistics for tooling: draw calls / triangles of the last frame, current pixel ratio, smoothed frame time. */
+      stats() { const r = renderer.info.render; return { calls: r.calls, triangles: r.triangles, dpr, frameMs: Math.round(ftAvg * 10000) / 10, rackMeshes: mergeStats }; },
+      /** Visible mesh count per top-level scene group (dev tooling: where the draw calls come from). */
+      meshCensus() {
+        const out: Record<string, any> = {}; const rackKinds: Record<string, number> = {};
+        for (const c of scene.children) {
+          let n = 0; c.traverse((o: any) => { if ((o.isMesh || o.isSprite || o.isPoints || o.isLine) && o.visible) { n++; if (c === rack) { const k = (o.name || '?').replace(/[_-]?\d+.*$/, ''); rackKinds[k] = (rackKinds[k] ?? 0) + 1; } } });
+          out[c.name || c.type] = n;
+        }
+        out.rackKinds = Object.fromEntries(Object.entries(rackKinds).sort((a, b) => b[1] - a[1]).slice(0, 40));
+        return out;
+      },
       airflow: showAirflow, mode: 'visual' as RackView,
       slots: rack.userData.slots as Slot[], temps: thermal.temps as number[],
       items: explodeItems.map((it) => ({ kind: it.kind, label: it.label })),
@@ -523,7 +575,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   const openIssue = issues.find((i) => i.id === openIssueId) ?? (openIsDone && openSnapshot?.id === openIssueId ? openSnapshot : null);
   const openIssueRack = openIssue ? RACK_BY_ID[openIssue.rackId] ?? null : null;
   const VIEW_LABEL: Record<RackView, string> = { visual: 'Visual', thermal: 'Thermal camera', liquid: 'Liquid cooling' };
-  const POWER_LABEL: Record<PowerPhase, string> = { utility: 'Utility', utility_lost: 'UTILITY LOST · transferring to UPS', on_battery: 'ON BATTERY · genset starting', generator: 'GENERATOR carrying load', utility_restored: 'Utility restored · retransfer complete' };
+  const POWER_LABEL: Record<PowerPhase, string> = { utility: 'Utility', utility_lost: 'UTILITY LOST · transferring to UPS', on_battery: 'ON BATTERY · UPS carrying load', generator: 'STANDBY FEED carrying load · UPS recharging', utility_restored: 'Utility restored · retransfer complete' };
   const hottest = (() => { const a = apiRef.current; if (!a) return null; const t: number[] = temps ?? a.temps; const i = t.indexOf(Math.max(...t)); const s = a.slots[i]; if (!s) return null; const u = Math.round((s.y - s.h / 2 - 0.13) / 0.04445) + 1; return `HOTTEST U${u} · ${Math.round(s.h / 0.04445)}U · ${(19.5 + Math.min(1, t[i]) * 28.5).toFixed(1)} °C`; })();
 
   return (

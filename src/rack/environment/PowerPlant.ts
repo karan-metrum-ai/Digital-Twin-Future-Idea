@@ -5,11 +5,9 @@
 //     tap-off box above every rack and a pair of drop cords into each rack's top;
 //   • a floor-standing PDU cabinet at the end of each row (beyond the CDU) that the busway terminates into, with a
 //     breaker panel, feed LEDs and a load LCD;
-//   • three UPS cabinets along the back wall with status LCDs;
-//   • a standby genset in the back-left corner (enclosure, exhaust stack, day tank) with a rotating amber beacon
-//     that only runs while it is starting or carrying the load.
-// Static geometry is merged per material (one draw call per material, mirroring OverheadCabling.ts); the LCDs, LEDs
-// and beacon are the only live meshes and are driven through userData.setState / tick.
+//   • three UPS cabinets along the back wall with status LCDs.
+// Static geometry is merged per material (one draw call per material, mirroring OverheadCabling.ts); the LCDs and
+// LEDs are the only live meshes and are driven through userData.setState / tick.
 // Copyright Metrum AI — built using Metrum AI's Anthropic/Claude account.
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { ROW_XS, ROW_A_Z, ROW_B_Z, LIVE_RACK_PLACEMENT } from './RackRow';
@@ -21,7 +19,6 @@ const RACK_TOP = 0.13 + 42 * 0.04445 + 0.02;
 export const PDU_A = { x: 2.95, z: ROW_A_Z, rotY: 0 }, PDU_B = { x: -2.95, z: ROW_B_Z, rotY: Math.PI };
 const PDU_W = 0.8, PDU_H = 2.0, PDU_D = 0.6;
 const UPS_XS = [-3.3, -2.6, -1.9], UPS_Z = ROOM_BOUNDS.minZ + 0.47, UPS_W = 0.6, UPS_H = 2.0, UPS_D = 0.9;
-const GEN = { x: -6.3, z: ROOM_BOUNDS.minZ + 0.75, w: 2.6, h: 1.9, d: 1.1 };
 const FONT = (w, px) => `${w} ${px}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
 
 export function buildPowerPlant(THREE) {
@@ -39,14 +36,10 @@ export function buildPowerPlant(THREE) {
     tap: M('busway_tap_box', { color: 0x1b1d21, roughness: 0.55, metalness: 0.5 }),
     cordA: M('drop_cord_a', { color: 0x8a3a1a, roughness: 0.7, metalness: 0 }),
     cordB: M('drop_cord_b', { color: 0x1f4f9a, roughness: 0.7, metalness: 0 }),
-    yellow: M('genset_enclosure', { color: 0xd9a21b, roughness: 0.55, metalness: 0.3 }),
-    louvre: M('genset_louvre', { color: 0x2a2a2a, roughness: 0.8, metalness: 0.3 }),
-    stack: M('genset_stack', { color: 0x4a4d52, roughness: 0.6, metalness: 0.7 }),
-    tank: M('fuel_tank', { color: 0x3c4046, roughness: 0.5, metalness: 0.6 }),
     rod: M('hanger_rod_zinc', { color: 0x7d8288, roughness: 0.55, metalness: 0.8 }),
     vent: M('cabinet_vent', { color: 0x0c0d10, roughness: 0.8, metalness: 0.3 }),
   };
-  // Each item (busway, floor PDUs, UPS bank, genset) bakes into its own sub-group so it can be shown/hidden on its own.
+  // Each item (busway, floor PDUs, UPS bank) bakes into its own sub-group so it can be shown/hidden on its own.
   const buckets = new Map(), sections = {}; let cur = 'busway';
   const sec = (name) => { cur = name; if (!sections[name]) { const sg = new THREE.Group(); sg.name = 'power_' + name; g.add(sg); sections[name] = sg; } return sections[name]; };
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s = new THREE.Vector3(1, 1, 1), _p = new THREE.Vector3();
@@ -164,41 +157,13 @@ export function buildPowerPlant(THREE) {
   box(mats.busway, UPS_XS[0] - UPS_XS[2] + UPS_W + 0.4, 0.14, 0.12, (UPS_XS[0] + UPS_XS[2]) / 2, UPS_H + 0.35, UPS_Z - 0.2);
   for (const ux of UPS_XS) box(mats.trim, 0.12, 0.28, 0.1, ux, UPS_H + 0.14, UPS_Z - 0.2);
 
-  /* ---------------- standby genset (back-left corner) ---------------- */
-  {
-    sec('genset');
-    const { x, z, w, h, d } = GEN;
-    box(mats.yellow, w, h, d, x, 0.12 + h / 2, z); box(mats.trim, w + 0.04, 0.12, d + 0.04, x, 0.06, z);
-    for (let i = 0; i < 9; i++) box(mats.louvre, 0.5, 0.05, 0.01, x - w / 2 + 0.45, 0.5 + i * 0.12, z + d / 2 + 0.006);     // intake louvres
-    for (let i = 0; i < 9; i++) box(mats.louvre, 0.5, 0.05, 0.01, x + w / 2 - 0.45, 0.5 + i * 0.12, z + d / 2 + 0.006);
-    box(mats.trim, 1.0, 1.2, 0.02, x, 1.0, z + d / 2 + 0.01); box(mats.busway, 0.04, 0.5, 0.03, x + 0.42, 1.0, z + d / 2 + 0.03); // access door + handle
-    cylY(mats.stack, 0.09, 4.7 - (0.12 + h), x - w / 2 + 0.3, (4.7 + 0.12 + h) / 2, z - 0.25);                                     // exhaust stack to the roof
-    cylY(mats.stack, 0.16, 0.5, x - w / 2 + 0.3, 0.12 + h + 0.25, z - 0.25);                                                        // silencer
-    cylX(mats.tank, 0.32, 1.3, x + w / 2 + 0.95, 0.52, z + 0.1); box(mats.trim, 1.2, 0.12, 0.7, x + w / 2 + 0.95, 0.12, z + 0.1);   // day tank on saddles
-    tube(mats.cordA, [[x + w / 2 + 0.3, 0.4, z + 0.1], [x + w / 2 + 0.05, 0.6, z + 0.1]], 0.02, 6);
-    // Signage: model plate on the enclosure.
-    const { ctx, tex } = canvasTex(512, 128);
-    ctx.fillStyle = '#15161a'; ctx.fillRect(0, 0, 512, 128); ctx.fillStyle = '#f3d27a'; ctx.font = FONT(700, 50); ctx.textBaseline = 'middle'; ctx.fillText('GENSET · 750 kVA', 22, 44);
-    ctx.fillStyle = '#9aa3b5'; ctx.font = FONT(500, 26); ctx.fillText('STANDBY · DIESEL · AUTO-START 10 s', 22, 96);
-    const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.175), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, metalness: 0.2 })); plate.name = 'genset_plate';
-    plate.position.set(x, 1.75, z + d / 2 + 0.012); sec('genset').add(plate);
-    // Rotating amber beacon on the roof of the enclosure.
-    const beaconMat = new THREE.MeshStandardMaterial({ color: 0x3a2a08, emissive: 0xffa020, emissiveIntensity: 0, roughness: 0.3, transparent: true, opacity: 0.9, toneMapped: false });
-    const dome = liveMesh(new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), beaconMat)); dome.name = 'genset_beacon'; dome.position.set(x + 0.6, 0.12 + h + 0.05, z);
-    box(mats.trim, 0.2, 0.05, 0.2, x + 0.6, 0.12 + h + 0.025, z);
-    const sweepMat = new THREE.MeshBasicMaterial({ color: 0xffa020, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
-    const sweep = liveMesh(new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.16), sweepMat)); sweep.name = 'genset_beacon_sweep'; sweep.position.set(x + 0.6 + 0.45, 0.12 + h + 0.1, z);
-    const sweepPivot = new THREE.Group(); sweepPivot.position.set(x + 0.6, 0, z); sweep.position.set(0.45, 0.12 + h + 0.1, 0); sweep.parent.remove(sweep); sweepPivot.add(sweep); sec('genset').add(sweepPivot);
-    g.userData.beacon = { mat: beaconMat, sweepMat, pivot: sweepPivot };
-  }
-
   /* ---------------- bake ---------------- */
   for (const { mat, geos, section } of buckets.values()) {
     const merged = mergeGeometries(geos, false); geos.forEach((gg) => gg.dispose());
     if (!merged) continue;
-    const m = new THREE.Mesh(merged, mat); m.name = 'power_' + mat.name; m.castShadow = /cabinet|ups_shell|genset/.test(mat.name); m.receiveShadow = false; sections[section].add(m);
+    const m = new THREE.Mesh(merged, mat); m.name = 'power_' + mat.name; m.castShadow = /cabinet|ups_shell/.test(mat.name); m.receiveShadow = false; sections[section].add(m);
   }
-  /** Show/hide one item: 'busway' | 'pdu' | 'ups' | 'genset'. */
+  /** Show/hide one item: 'busway' | 'pdu' | 'ups'. */
   g.userData.setVisible = (name, on) => { if (sections[name]) sections[name].visible = on; };
 
   /* ---------------- live state ---------------- */
@@ -209,9 +174,6 @@ export function buildPowerPlant(THREE) {
     const onBatt = state.source === 'battery', lost = state.source === 'none';
     upsLeds.forEach((m) => { m.emissive.setHex(onBatt ? 0xffb020 : lost ? 0xff3a24 : 0x2ee36a); m.emissiveIntensity = onBatt ? 1.4 + 1.2 * (Math.sin(t * 6) > 0 ? 1 : 0) : 1.8; });
     feedLeds.forEach((m, i) => { const ok = state.source === 'utility' || (state.source === 'generator' && i === 1) || (state.source === 'battery'); m.emissive.setHex(ok ? 0x2ee36a : 0xff3a24); m.emissiveIntensity = ok ? 1.8 : 1.2 + 1.2 * (Math.sin(t * 5 + i) > 0 ? 1 : 0); });
-    const b = g.userData.beacon;
-    if (state.genRunning) { b.mat.emissiveIntensity = 2.6; b.pivot.rotation.y = t * 4.2; b.sweepMat.opacity = 0.55; }
-    else { b.mat.emissiveIntensity = 0; b.sweepMat.opacity = 0; }
   };
   g.userData.tick(0);
   return g;

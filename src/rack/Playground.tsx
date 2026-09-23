@@ -62,7 +62,7 @@ export function Playground() {
           <input type="range" min={0} max={100} value={Math.round(explode * 100)} onChange={(e) => setExplode(Number(e.target.value) / 100)} style={{ width: 140 }} />
           <span style={{ opacity: 0.7, width: 32, display: 'inline-block' }}>{Math.round(explode * 100)}%</span>
         </label>
-        <button onClick={() => setPowerEvent((n) => n + 1)} disabled={powerBusy} title="Drop the utility feed: UPS carries the hall, genset auto-starts, then retransfer" style={{ ...btn, marginLeft: 8, borderColor: 'rgba(255,160,32,0.45)', opacity: powerBusy ? 0.5 : 1, cursor: powerBusy ? 'default' : 'pointer' }}>⚡ Simulate utility loss</button>
+        <button onClick={() => setPowerEvent((n) => n + 1)} disabled={powerBusy} title="Drop the utility feed: UPS carries the hall, standby feed picks up, then retransfer" style={{ ...btn, marginLeft: 8, borderColor: 'rgba(255,160,32,0.45)', opacity: powerBusy ? 0.5 : 1, cursor: powerBusy ? 'default' : 'pointer' }}>⚡ Simulate utility loss</button>
         <span style={{ marginLeft: 16, opacity: 0.75 }}>
           {issues.length} open alarm{issues.length === 1 ? '' : 's'}
           {remediation.phase !== 'idle' && <> · <b style={{ color: '#eef0f4' }}>{remediation.issueId}</b> {remediation.phase === 'requested' ? '⟳ dispatching' : remediation.phase === 'confirmed' ? 'technician working' : '✓ closed'}</>}

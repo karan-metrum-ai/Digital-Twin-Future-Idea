@@ -61,37 +61,52 @@ right edge (title, device, age, summary, raw logs) and, for any issue that carri
 
 - **Power** (`environment/PowerPlant.ts`): A/B busway rails (orange / blue) with a tap-off box and two drop cords
   over every rack, an end-of-row floor PDU per row (breaker panel, feed LEDs, load LCD), a UPS bank along the back
-  wall and a standby genset in the corner. **⚡ Simulate utility loss** (`power/PowerEvent.ts`) plays the scripted
-  event: lighting flickers to emergency level and the red strips + horn/strobes come up, UPS LCDs go to battery,
-  the genset beacon spins and picks up the load, lighting returns, then retransfer to utility (~18 s).
-- **Life safety** (`environment/LifeSafety.ts`): clean-agent cylinder bank with roof discharge nozzles, VESDA
-  aspirating detector with its sampling pipe, manual pull station and horn/strobes.
+  wall. **⚡ Simulate utility loss** (`power/PowerEvent.ts`) plays the scripted event: lighting flickers to
+  emergency level and the red strips come up, UPS LCDs go to battery, the standby feed picks up the load, lighting
+  returns, then retransfer to utility (~18 s).
+- **Life safety** (`environment/LifeSafety.ts`): VESDA aspirating smoke detector with its roof sampling pipe.
 - **Leak detection** (`environment/LeakDetection.ts`): sensing rope under both rows' coolant headers and around each
   CDU, with a per-row leak controller whose zone goes WET/red while a facility incident is open (INC-4825).
 - **Technician** (`people/Technician.ts`): a rigged, skinned humanoid — the CC0 mannequin from Quaternius' Universal
   Animation Library (`public/models/technician.glb`, Idle / Walk / Interact / Fixing-Kneeling clips) driven by an
-  `AnimationMixer`, dressed at runtime in a navy uniform, hi-vis band and hard hat. Does rounds of the aisles between
-  jobs; a dispatch pulls them off the rounds from wherever they are.
+  `AnimationMixer`, dressed at runtime in a navy uniform, hi-vis vest, tool belt and hard hat — every garment is
+  sized from the skinned mesh itself (the head, torso and hip extents are measured in bone space at load), so the hat
+  sits on the skull and the vest hugs the torso. Does rounds of the aisles between jobs; a dispatch pulls them off the
+  rounds from wherever they are. A procedural upper-body layer (`people/armOverlay.ts`) rides on top of the clips:
+  the arm swing is amplified while walking, the head turns toward the rack being walked to, the right hand rises
+  toward it over the last ~1.7 m and stays half-raised while the fix waits to be confirmed.
 - **Staff entrance** (`environment/Environment.ts`): steel door with push bar and window, badge reader (flashes blue
   when the technician badges in) and EXIT sign.
 - **NOC wall** (`environment/NocWall.ts`): 2×2 video wall over an operator desk, redrawn at 1 Hz with live PUE, IT
   load, coolant supply/ΔT, open alarms by severity, power source and an IT-load sparkline.
 - **Ambience**: idle LED patterns per device (`ledPatterns.ts` — activity flicker, power steady, link strobe with
   dark ports, heartbeat), dimmed or dropped by the power event; and a synthesised sound bed (`audio/Ambience.ts`:
-  fan hum + moving air scaled by camera proximity, genset rumble, alarm/badge/latch chirps) behind the 🔇/🔊 toggle
+  fan hum + moving air scaled by camera proximity, standby-power rumble, alarm/badge/latch chirps) behind the 🔇/🔊 toggle
   beside the view tabs — off by default, remembered in `localStorage`.
 
 ### Scene items
 
 **Scene items ▾** (beside the view tabs) lists every optional piece of fit-out with a checkbox — technician, alarm cards
-& beacons, NOC wall, leak rope, overhead trays, staff door, busway, floor PDUs, UPS bank, genset, clean-agent
-cylinders, VESDA, pull station & strobes — grouped by People / Monitoring / Facility / Power / Life safety, with
-`all` / `none` / `defaults` shortcuts. Choices are remembered per browser (`localStorage` key `rackTwin.layers`); the
-genset and the agent cylinders are off by default. Embedders can pin items with the `layers` prop (those checkboxes
+& beacons, NOC wall, leak rope, overhead trays, staff door, busway, floor PDUs, UPS bank, VESDA — grouped by
+People / Monitoring / Facility / Power / Life safety, with `all` / `none` / `defaults` shortcuts. Choices are
+remembered per browser (`localStorage` key `rackTwin.layers`). Embedders can pin items with the `layers` prop (those checkboxes
 show disabled) and listen with `onLayersChange`; the definitions live in `SCENE_LAYER_DEFS` (`src/rack/types.ts`).
 
 Append `?debug` to the URL to expose `window.__rackTwin` (the scene's imperative API — `selectRack`, `flyTo`,
-`setCamera`, `setRemediation`, `triggerPowerEvent`, …) for tooling and screenshot scripts.
+`setCamera`, `setRemediation`, `triggerPowerEvent`, `stats`, `meshCensus`, …) for tooling and screenshot scripts.
+
+### Rendering budget
+
+- **Static merge** (`src/rack/mergeStatics.ts`): after the replicas are baked, the interactive rack's small decorative
+  parts (drive carriers, ears, screws, trims, outlet pins, LED dots…) are merged into one mesh per material per
+  exploded-view item — about half its draw calls, with covers, doors, cables and ports left individually meshed.
+- **Shadow pass on demand**: the shadow map is re-rendered every frame only while a caster is moving (technician
+  walking, a door swinging, the exploded view separating), otherwise every 2nd/3rd frame.
+- **Adaptive resolution**: the pixel ratio starts at the device ratio (capped at 1.5) and steps down toward 1.0 when
+  the smoothed frame time sits above ~25 ms, back up when frames come easily again.
+- **Coarse picking**: hover/click rays are tested against per-rack bounding boxes first and only descend into the
+  racks they actually cross.
+- Camera fly-to, door swing and exploded-view motion are frame-rate independent (time-based easing).
 
 ## Code structure
 
@@ -120,8 +135,8 @@ src/rack/
   environment/                Floor, walls + staff door, lights, cooling grill
     RackRow.ts                Two-row hot-aisle layout + baked rack replicas
     RackAirflow.ts            Heat/vapor particle sims instanced at every replica rack
-    PowerPlant.ts             Busway + drop cords, floor PDUs, UPS bank, genset (merged static + live LCDs/LEDs)
-    LifeSafety.ts             Clean-agent suppression, VESDA, pull station, horn/strobes
+    PowerPlant.ts             Busway + drop cords, floor PDUs, UPS bank (merged static + live LCDs/LEDs)
+    LifeSafety.ts             VESDA smoke detection + roof sampling pipe
     LeakDetection.ts          Leak rope under the coolant headers + per-row leak controller
     NocWall.ts                NOC video wall + operator desk, redrawn from live twin state
   issues/                     Rack registry, demo incidents, on-rack alarm visuals, issue modal
@@ -131,7 +146,8 @@ src/rack/
     RemediationScene.ts       Routes an in-flight remediation to the right on-rack act
     fruSwapAnimation.ts       Proxy FRU swap / console-strip animations (work on baked replica racks)
     remediationApi.ts         Remediation API client (real POST or mocked round trip)
-  people/                     Technician avatar (Technician.ts) + corridor routing (paths.ts)
+  people/                     Technician avatar (Technician.ts), procedural arm/head layer (armOverlay.ts), corridor routing (paths.ts)
+  mergeStatics.ts             Per-item static merge of the interactive rack's decorative parts (draw-call budget)
   power/PowerEvent.ts         Scripted utility-loss state machine (pure TS)
   audio/Ambience.ts           Web Audio sound bed + chirps
   ledPatterns.ts              Idle LED behaviour per device kind, gated by the power state

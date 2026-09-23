@@ -125,6 +125,8 @@ export function buildEnvironment(THREE) {
   };
   e.userData = {
     lamps: { material: lamp, meshes: lamps }, emergency, badgeLed, tick, door: doorGrp,
+    /** True while the staff door leaf is still swinging (it casts a shadow, so the shadow pass must keep up). */
+    get doorMoving() { return Math.abs(doorTarget - hinge.rotation.y) > 2e-3; },
     /** Swing the staff door open (toward the room) or closed. */
     setDoorOpen(on) { doorTarget = on ? 1.35 : 0; },
     /** Blue "badge read" flash for `secs` seconds of scene time from `t`. */

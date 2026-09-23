@@ -11,8 +11,8 @@ export type Slot = { y: number; h: number; zr: number };
 /** Toggleable scene items (the "Scene items" dropdown beside the view tabs). */
 export type SceneLayer =
   | 'technician' | 'alarmCards' | 'overheadCabling' | 'staffDoor' | 'nocWall' | 'leakDetection'
-  | 'busway' | 'floorPdus' | 'ups' | 'genset'
-  | 'fireSuppression' | 'vesda' | 'alarmDevices';
+  | 'busway' | 'floorPdus' | 'ups'
+  | 'vesda';
 export type SceneLayers = Record<SceneLayer, boolean>;
 export interface SceneLayerDef { id: SceneLayer; label: string; group: string; hint?: string }
 export const SCENE_LAYER_DEFS: SceneLayerDef[] = [
@@ -25,15 +25,12 @@ export const SCENE_LAYER_DEFS: SceneLayerDef[] = [
   { id: 'busway', label: 'Busway & drop cords', group: 'Power' },
   { id: 'floorPdus', label: 'Floor PDUs', group: 'Power' },
   { id: 'ups', label: 'UPS bank', group: 'Power' },
-  { id: 'genset', label: 'Standby genset & day tank', group: 'Power' },
-  { id: 'fireSuppression', label: 'Clean-agent cylinders & nozzles', group: 'Life safety' },
   { id: 'vesda', label: 'VESDA smoke detection', group: 'Life safety' },
-  { id: 'alarmDevices', label: 'Pull station & horn/strobes', group: 'Life safety' },
 ];
 export const DEFAULT_SCENE_LAYERS: SceneLayers = {
   technician: true, alarmCards: true, nocWall: true, leakDetection: true, overheadCabling: true, staffDoor: true,
-  busway: true, floorPdus: true, ups: true, genset: false,
-  fireSuppression: false, vesda: true, alarmDevices: true,
+  busway: true, floorPdus: true, ups: true,
+  vesda: true,
 };
 export type RackView = 'visual' | 'thermal' | 'liquid';
 /**

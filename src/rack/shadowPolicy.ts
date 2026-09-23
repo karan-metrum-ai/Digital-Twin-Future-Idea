@@ -5,7 +5,7 @@
 // the shadow map for almost no readable contact. Replicas and liquid fixtures opt out entirely.
 
 /** Name prefixes / substrings that should cast (rack silhouette + large opaque volumes). */
-const CAST_RE = /(plinth|top_panel|corner_post|side_panel|mounting_rail|rail_bracket|door_frame|rear_door|front_door|blanking_panel|chassis|bezel_frame|bezel_end_cap|bezel_rail|bezel_hex|bezel_lock_boss|server_|switch_|patch_panel|cable_manager|pdu_|hpdu_|vertical_pdu|horizontal_pdu|nuc_shelf|nuc_body|cdu_|manifold|header_|cabinet|technician_body|technician_leg|ups_shell|pdu_cabinet|genset_)/i;
+const CAST_RE = /(plinth|top_panel|corner_post|side_panel|mounting_rail|rail_bracket|door_frame|rear_door|front_door|blanking_panel|chassis|bezel_frame|bezel_end_cap|bezel_rail|bezel_hex|bezel_lock_boss|server_|switch_|patch_panel|cable_manager|pdu_|hpdu_|vertical_pdu|horizontal_pdu|nuc_shelf|nuc_body|cdu_|manifold|header_|cabinet|technician_body|technician_leg|ups_shell|pdu_cabinet)/i;
 
 /** Tiny / thin parts that must never cast (even if a parent name matched). */
 const NEVER_CAST_RE = /(cable|boot|led|screw|velcro|ring|hose|qd_|collar|flange|clamp|fiber|connector|activity_led|lock_barrel|key_slot|hinge_pin|caster_wheel|caster_hub|leveling_|outlet|pin|breaker|display|badge|brush_)/i;
