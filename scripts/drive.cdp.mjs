@@ -54,8 +54,8 @@ const moved = await until(async () => { const s = await state(); return Math.abs
 const s1 = await state();
 check('moved along the aisle, z stays 1.0', moved && Math.abs(s1.pos[2] - 1.0) < 0.05, `from x=${s0.pos[0].toFixed(2)} to ${s1.pos[0].toFixed(2)}, frameMs ${(await evaluate('window.__rackTwin.stats()')).frameMs}`);
 check('walking pose while driving', s1.pose === 'walk' && s1.walking === true, s1.pose);
-// 3. release within 0.4 m of a stand point: stands are at x = {-1.68,-1.03,-0.38,0.27,0.92} on row A
-const STANDS = [-1.68, -1.03, -0.38, 0.27, 0.92];
+// 3. release near a stand point: manual stands are centred on the racks, x = {-1.3,-0.65,0,0.65,1.3} on row A
+const STANDS = [-1.3, -0.65, 0, 0.65, 1.3];
 let released = false;
 for (let i = 0; i < 80 && !released; i++) {
   const s = await state(); const x = s.pos[0], fx = Math.sin(s.yaw);
@@ -71,7 +71,8 @@ check('parked at a rack stop', d3.atStop !== null, `atStop ${d3.atStop}, pos ${s
 check('inspecting pose (idle + inspect flag)', s3.inspecting === true && s3.pose === 'idle', `${s3.pose} / inspecting ${s3.inspecting}`);
 check('faces the rack (yaw ≈ π for row A)', Math.abs(Math.atan2(Math.sin(s3.yaw - Math.PI), Math.cos(s3.yaw - Math.PI))) < 0.2, `yaw ${s3.yaw.toFixed(2)}`);
 const cam = await evaluate('window.__rackTwin.cameraPos()');
-check('camera handed off toward the rack focus shot (in front of row A, above 1.5 m)', cam[2] > 1.5 && cam[1] > 1.5, `cam ${cam.map((v) => v.toFixed(2))}`);
+check('camera handed off to the over-the-shoulder inspect shot (behind the technician, ~1.85 m up)', cam[2] > 1.8 && cam[2] < 3.0 && Math.abs(cam[1] - 1.85) < 0.2, `cam ${cam.map((v) => v.toFixed(2))}, tech ${s3.pos.map((v) => v.toFixed(2))}`);
+check('toolbar shows Manual', await evaluate(`[...document.querySelectorAll('button')].some((b) => /Manual/.test(b.textContent) && b.getAttribute('aria-pressed') === 'true')`));
 await shot('drive-01-inspecting.png');
 // close-up of the pose from the side
 await evaluate(`(() => { const a = window.__rackTwin, p = a.techState().pos; a.setCamera([p[0] + 1.9, 1.6, p[2] + 0.9], [p[0], 1.25, p[2] - 0.6]); })()`); await sleep(300);
@@ -102,12 +103,14 @@ await key('keyDown', 'ArrowDown'); await sleep(600); await key('keyUp', 'ArrowDo
 const after = (await state()).pos;
 check('arrows ignored while a form control has focus', Math.hypot(after[0] - before[0], after[2] - before[2]) < 0.02, `moved ${Math.hypot(after[0] - before[0], after[2] - before[2]).toFixed(3)} m`);
 await evaluate(`document.activeElement && document.activeElement.blur()`);
-// 7. inactivity resumes the rounds
-console.log('waiting for the rounds to resume (20 s idle)…');
-const resumed = await until(async () => (await drv()).driving === false, 40000, 1000);
-await until(async () => (await state()).walking === true, 15000, 500);
-const d7 = await drv(); const s7 = await state();
-check('rounds resume after 20 s idle', resumed && s7.walking === true, JSON.stringify({ driving: d7.driving, walking: s7.walking }));
+// 7. no idle timeout: still manual after 6 s; the Auto switch resumes the rounds; Manual takes them back
+await sleep(6000);
+check('manual mode persists while idle', (await drv()).driving === true && (await evaluate('window.__rackTwin.techMode()')) === 'manual');
+await evaluate(`[...document.querySelectorAll('button')].find((b) => /Auto/.test(b.textContent)).click()`);
+const resumed = await until(async () => (await drv()).driving === false && (await state()).walking === true, 20000, 500);
+check('Auto switch resumes the rounds', resumed, JSON.stringify(await state()));
+await evaluate(`[...document.querySelectorAll('button')].find((b) => /Manual/.test(b.textContent)).click()`); await sleep(500);
+check('Manual switch hands control to the keyboard', (await drv()).driving === true && (await evaluate('window.__rackTwin.techMode()')) === 'manual');
 
 console.log('page errors:', logs.length ? '\n' + logs.join('\n') : 'none');
 if (logs.length) fails++;

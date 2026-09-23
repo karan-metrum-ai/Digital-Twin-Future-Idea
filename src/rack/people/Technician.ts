@@ -10,6 +10,7 @@
 // Copyright Metrum AI — built using Metrum AI's Anthropic/Claude account.
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { createArmOverlay } from './armOverlay';
+import { createUniformMaterial, bakeUniformAttributes, REGION } from './uniformMaterial';
 
 const WALK_SPEED = 1.5;      // m/s
 const TURN_RATE = 9;         // yaw easing rate, 1/s (frame-rate independent)
@@ -17,7 +18,11 @@ const REACH_FROM_M = 1.7;    // the right hand starts rising toward the rack thi
 const REACH_HOLD = 0.7;      // how far the hand stays raised while standing at the rack waiting for the fix
 const INSPECT_REACH = 0.75;  // hand toward the rack while the user has parked the technician in front of it (drive mode)
 const HEIGHT_M = 1.78;
-const CLIP = { idle: 'Idle_Loop', walk: 'Walk_Loop', kneel: 'Fixing_Kneeling', reach: 'Interact' };
+// 'reach' (working on a device above knee height) is the idle stance with the right hand placed on the device by the
+// arm overlay's IK (workAt), rather than the canned Interact poke; 'kneel' is the authored kneeling fix.
+const CLIP = { idle: 'Idle_Loop', walk: 'Walk_Loop', kneel: 'Fixing_Kneeling', reach: 'Idle_Loop' };
+const FADE = { idle: 0.45, walk: 0.3, kneel: 0.6, reach: 0.45 }; // crossfade seconds into each pose
+const FADE_STAND_UP = 0.9;  // kneel -> idle: standing back up takes a moment
 const WALK_CLIP_MPS = 1.35; // ground speed the Walk_Loop cycle is authored at
 const MODEL_URL = `${import.meta.env.BASE_URL ?? '/'}models/technician.glb`;
 
@@ -45,55 +50,34 @@ export function buildTechnician(THREE) {
     const box = new THREE.Box3().setFromObject(model); const h = box.max.y - box.min.y;
     model.scale.multiplyScalar(HEIGHT_M / h); model.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(model); model.position.y -= box2.min.y;
-    // Dress the mannequin. The mesh is one skin, so clothing is painted per vertex from the bone each vertex mostly
-    // follows: skin on the head, neck, forearms and hands; a navy short-sleeve polo over the torso and upper arms;
-    // charcoal work trousers; black safety boots. Joint caps take the same colour a shade darker.
-    const PALETTE = {
-      skin: new THREE.Color(0xc98f6b), hair: new THREE.Color(0x2b2118), polo: new THREE.Color(0x2b4a7c), collar: new THREE.Color(0xe8ebef),
-      trouser: new THREE.Color(0x30343b), belt: new THREE.Color(0x15171a), boot: new THREE.Color(0x141414),
-    };
-    const regionOf = (name) => {
-      if (/^(head)$/.test(name)) return 'head';
-      if (/^neck$/.test(name)) return 'skin';
-      if (/forearm|hand|thumb|f_index|f_middle|f_ring|f_pinky/.test(name)) return 'skin';
-      if (/shoulder|upper_arm|spine/.test(name)) return 'polo';
-      if (/hips/.test(name)) return 'trouser';
-      if (/thigh|shin/.test(name)) return 'trouser';
-      if (/foot|toe/.test(name)) return 'boot';
-      return 'polo';
-    };
-    const paint = (mesh, darken) => {
-      const g = mesh.geometry, pos = g.attributes.position, si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
-      if (!si || !sw || !mesh.skeleton) return;
-      const col = new Float32Array(pos.count * 3), c = new THREE.Color(), boneName = mesh.skeleton.bones.map((b) => boneKey(b.name));
-      const headBone = bones['head']; const headY = headBone ? headBone.getWorldPosition(new THREE.Vector3()).y : Infinity;
-      const v = new THREE.Vector3();
-      for (let i = 0; i < pos.count; i++) {
-        // Dominant joint decides the garment.
-        let best = 0, bw = -1; for (let k = 0; k < 4; k++) { const w = sw.getComponent(i, k); if (w > bw) { bw = w; best = si.getComponent(i, k); } }
-        const region = regionOf(boneName[best] ?? '');
-        if (region === 'head') { v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld); c.copy(v.y > headY + 0.135 ? PALETTE.hair : PALETTE.skin); }
-        else if (region === 'polo') { v.fromBufferAttribute(pos, i); c.copy(boneName[best] === 'spine003' && v.y > 1.5 ? PALETTE.collar : PALETTE.polo); }
-        else if (region === 'trouser') { v.fromBufferAttribute(pos, i); c.copy(boneName[best] === 'hips' && v.y > 0.98 ? PALETTE.belt : PALETTE.trouser); }
-        else c.copy(PALETTE[region]);
-        if (darken) c.multiplyScalar(0.72);
-        col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
-      }
-      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    // Dress the mannequin. The mesh is one skin, so the uniform is drawn by the shader (uniformMaterial.ts) from each
+    // vertex's rest-pose position and a body region taken from the bone it mostly follows: skin on the head, neck,
+    // forearms and hands; a navy polo over the torso and upper arms with the hi-vis vest, zip and collar painted on
+    // top; charcoal trousers with the belt; black safety boots. Joint caps use the same material a shade darker.
+    const regionOfBone = (name) => {
+      if (/^head$/.test(name)) return REGION.hair;                 // split into hair / skin by height in bakeUniformAttributes
+      if (/^neck$/.test(name)) return REGION.skin;
+      if (/forearm|hand|thumb|f_index|f_middle|f_ring|f_pinky/.test(name)) return REGION.skin;
+      if (/shoulder|upper_arm|spine/.test(name)) return REGION.polo;
+      if (/hips|thigh|shin/.test(name)) return REGION.trouser;
+      if (/foot|toe/.test(name)) return REGION.boot;
+      return REGION.polo;
     };
     model.updateMatrixWorld(true);
     model.traverse((o) => { if (o.isBone) bones[boneKey(o.name)] = o; });
+    const headY = bones['head'] ? bones['head'].getWorldPosition(new THREE.Vector3()).y : Infinity;
+    const uniformMat = createUniformMaterial(THREE), jointMat = createUniformMaterial(THREE, { joint: true });
     model.traverse((o) => {
       if (!(o.isMesh || o.isSkinnedMesh)) return;
       o.castShadow = true; o.receiveShadow = false; o.frustumCulled = false; o.name = 'technician_body';
       const src = Array.isArray(o.material) ? o.material[0] : o.material;
       const isJoint = /joint/i.test(src?.name ?? '');
-      paint(o, isJoint);
-      o.material = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: isJoint ? 0.6 : 0.82, metalness: 0.02 });
+      bakeUniformAttributes(THREE, o, regionOfBone, o.matrixWorld, headY + 0.135);
+      o.material = isJoint ? jointMat : uniformMat;
     });
 
-    // Work wear parented to the rig. Everything is sized from the skinned mesh itself (measureRegion: the extent of
-    // the vertices a bone drives, in that bone's frame) so the bands hug the torso and hips instead of guessing.
+    // Props parented to the rig (hard hat, lanyard + badge, tool pouch); the garments themselves are painted by the
+    // shader above. Sized from the skinned mesh itself (measureHead / measureRegion) so they sit on the body.
     const head = bone('head'), chest = bone('spine.002') ?? bone('spine.001'), upper = bone('spine.003') ?? chest, hips = bone('hips');
     const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05, ...o });
     const mats = {
@@ -121,31 +105,19 @@ export function buildTechnician(THREE) {
       hatG.add(band(mats.hiVis, 'technician_hat_band', rx * k + 0.003, rz * k + 0.003, 0.028, bandY, 0));
     }
     if (chest) {
-      // Hi-vis vest: an open-fronted band over the chest/upper-abdomen with two reflective stripes, sized to the
-      // torso between the waist and the shoulder roots and left ~1.2 cm loose like a real vest.
+      // ID badge on a lanyard round the neck, hanging just in front of the chest (chest depth measured from the mesh).
       const t = measureRegion(THREE, model, chest, ['spine002', 'spine003', 'spine001'], -0.07, 0.17, { halfX: 0.16, halfZ: 0.125, zc: 0 });
-      const rx = t.halfX + 0.012, rz = t.halfZ + 0.012, yMid = 0.05, h = 0.24;
-      chest.add(band(mats.hiVis, 'technician_vest', rx, rz, h, yMid, t.zc, 0.92, Math.PI * 0.09, Math.PI * 1.82));
-      chest.add(band(mats.stripe, 'technician_vest_stripe', rx + 0.003, rz + 0.003, 0.028, yMid - 0.06, t.zc, 1, Math.PI * 0.09, Math.PI * 1.82));
-      chest.add(band(mats.stripe, 'technician_vest_stripe', rx * 0.97 + 0.003, rz * 0.97 + 0.003, 0.028, yMid + 0.05, t.zc, 1, Math.PI * 0.09, Math.PI * 1.82));
-      // ID badge on a lanyard round the neck, hanging just in front of the chest.
+      const rz = t.halfZ + 0.012, yMid = 0.05;
       const lan = mesh(new THREE.TorusGeometry(0.09, 0.004, 6, 24, Math.PI * 1.1), mats.lanyard, 'technician_lanyard'); lan.position.set(0, 0.19, t.zc + 0.03); lan.rotation.set(-Math.PI / 2 + 0.6, 0, Math.PI / 2 + Math.PI * 0.45); chest.add(lan);
       const badge = mesh(new THREE.BoxGeometry(0.06, 0.085, 0.004), mats.badge, 'technician_badge'); badge.position.set(0.03, yMid, t.zc + rz + 0.012); badge.rotation.z = -0.08; chest.add(badge);
       const photo = mesh(new THREE.BoxGeometry(0.024, 0.03, 0.002), mats.badgeInk, 'technician_badge_photo'); photo.position.set(-0.013, 0.015, 0.003); badge.add(photo);
       for (let i = 0; i < 3; i++) { const l = mesh(new THREE.BoxGeometry(0.02, 0.004, 0.002), mats.badgeInk, 'technician_badge_line'); l.position.set(0.012, 0.026 - i * 0.012, 0.003); badge.add(l); }
       const clip = mesh(new THREE.BoxGeometry(0.012, 0.014, 0.006), mats.buckle, 'technician_badge_clip'); clip.position.set(0, 0.05, 0); badge.add(clip);
     }
-    if (upper) {
-      // Vest shoulder straps over the trapezius, placed from the shoulder-root width of the upper chest.
-      const u = measureRegion(THREE, model, upper, ['spine003', 'shoulderL', 'shoulderR'], 0.08, 0.2, { halfX: 0.16, halfZ: 0.09, zc: -0.04 });
-      for (const x of [-1, 1]) { const strap = mesh(new THREE.BoxGeometry(0.055, 0.014, 0.22), mats.hiVis, 'technician_vest_strap'); strap.position.set(x * (u.halfX - 0.07), 0.16, u.zc); strap.rotation.x = 0.12; upper.add(strap); }
-    }
     if (hips) {
-      // Tool belt with buckle and a pouch on the right hip, sized to the hips just above the trouser line.
+      // Tool pouch on the right hip (the belt and buckle are painted), sized to the hips just above the trouser line.
       const hp = measureRegion(THREE, model, hips, ['hips'], 0.03, 0.11, { halfX: 0.125, halfZ: 0.11, zc: 0.03 });
       const rx = hp.halfX + 0.01, rz = hp.halfZ + 0.01, y = 0.07;
-      hips.add(band(mats.leather, 'technician_belt', rx, rz, 0.04, y, hp.zc));
-      const buckle = mesh(new THREE.BoxGeometry(0.05, 0.035, 0.01), mats.buckle, 'technician_buckle'); buckle.position.set(0, y, hp.zc + rz + 0.004); hips.add(buckle);
       const pouch = mesh(new THREE.BoxGeometry(0.1, 0.13, 0.07), mats.leather, 'technician_pouch'); pouch.position.set(-(rx + 0.03), y - 0.09, hp.zc + 0.01); pouch.rotation.z = -0.05; hips.add(pouch); // character's right is -x
       const flap = mesh(new THREE.BoxGeometry(0.102, 0.04, 0.074), mats.leather, 'technician_pouch_flap'); flap.position.set(0, 0.06, 0); pouch.add(flap);
       const driver = mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.14, 8), mats.buckle, 'technician_driver'); driver.position.set(-0.03, 0.09, 0.02); pouch.add(driver);
@@ -155,9 +127,8 @@ export function buildTechnician(THREE) {
     mixer = new THREE.AnimationMixer(model);
     for (const clip of gltf.animations) { const a = mixer.clipAction(clip); a.enabled = true; a.setEffectiveWeight(0); actions[clip.name] = a; }
     if (actions[CLIP.walk]) actions[CLIP.walk].setEffectiveTimeScale(WALK_SPEED / WALK_CLIP_MPS);
-    if (actions[CLIP.reach]) actions[CLIP.reach].setEffectiveTimeScale(0.7);
     if (actions[CLIP.kneel]) { actions[CLIP.kneel].setEffectiveTimeScale(0.9); actions[CLIP.kneel].setLoop(THREE.LoopOnce, 1); actions[CLIP.kneel].clampWhenFinished = true; } // settle on one knee and stay there
-    overlay = createArmOverlay(THREE, bones, root); if (pendingLook) overlay.lookAt(pendingLook);
+    overlay = createArmOverlay(THREE, bones, root); if (pendingLook) overlay.lookAt(pendingLook); if (pendingAim) overlay.aimAt(pendingAim, pendingAim.gaze);
     ready = true;
     fade(clipFor(pose), 0);
   }, undefined, (err) => console.warn('[technician] model failed to load', err));
@@ -166,7 +137,7 @@ export function buildTechnician(THREE) {
   let path = null, seg = 0, segT = 0, onArrive = null, pose = 'idle', targetYaw = Math.PI, faceYaw = null;
   let reachWalk = false, atJob = false, pendingLook = null; // reachWalk: this walk ends at a rack (hand rises on approach); atJob: standing at one
   // Drive mode (keyboard, see corridors.ts): the scene places the figure every frame instead of a path.
-  let driving = false, driveSpeed = 0, inspecting = false;
+  let driving = false, driveSpeed = 0, inspecting = false, pendingAim = null;
   const walkTimeScale = (mps) => { if (ready && actions[CLIP.walk]) actions[CLIP.walk].setEffectiveTimeScale(mps / WALK_CLIP_MPS); };
 
   /** Metres left to the end of the current path. */
@@ -179,7 +150,7 @@ export function buildTechnician(THREE) {
   /** Walk a waypoint chain. `opts.reach`: the chain ends at a rack, so the hand rises toward it on the last stretch. */
   const walkTo = (pts, opts = {}) => new Promise((resolve) => {
     if (!pts || pts.length < 2) { resolve(); return; }
-    driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); // a dispatch walk always wins over the keyboard
+    driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); // a dispatch walk always wins over the keyboard (and takes them off the NOC desk)
     root.position.set(pts[0].x, 0, pts[0].z);
     path = pts; seg = 0; segT = 0; faceYaw = null; pose = 'walk'; reachWalk = !!opts.reach; atJob = false; if (ready) fade(CLIP.walk);
     onArrive = () => { pose = 'idle'; atJob = reachWalk; if (ready) fade(CLIP.idle); resolve(); };
@@ -210,12 +181,17 @@ export function buildTechnician(THREE) {
     else if (!path && atJob && pose === 'idle') reach = REACH_HOLD;
     else if (inspecting && pose === 'idle') reach = INSPECT_REACH;
     const moving = !!path || (driving && Math.abs(driveSpeed) > 0.05);
-    overlay.apply({ walking: moving, reach, armsFree: pose === 'idle' || pose === 'walk', inspect: inspecting && pose === 'idle' }, dt);
+    // 'reach' work (a device, or the NOC keyboard): arms are not free (no swing / inspect gestures) but the IK aim owns
+    // the right arm and the head.
+    const working = pose === 'reach';
+    overlay.apply({ walking: moving, reach: working ? 0 : reach, armsFree: pose === 'idle' || pose === 'walk', inspect: inspecting && pose === 'idle', aim: working }, dt);
   };
 
   root.userData = {
     walkTo, tick,
-    setPose(p) { pose = p; if (ready) fade(clipFor(p)); },
+    setPose(p) { const from = pose; pose = p; if (ready) fade(clipFor(p), from === 'kneel' && p !== 'kneel' ? FADE_STAND_UP : (FADE[p] ?? 0.4)); },
+    /** Point the right hand (and eyes) at a world point while in the 'reach' work pose; null releases. */
+    workAt(p, gaze) { if (overlay) overlay.aimAt(p, gaze); pendingAim = p ? { x: p.x, y: p.y, z: p.z, gaze: gaze ? { x: gaze.x, y: gaze.y, z: gaze.z } : undefined } : null; },
     /** Turn the head toward a world x/z point while walking or standing (null clears). */
     lookAt(p) { pendingLook = p ?? null; if (overlay) overlay.lookAt(pendingLook); },
     /** Face a world yaw (toward the rack) once standing still. */
@@ -242,7 +218,7 @@ export function buildTechnician(THREE) {
     /** Face `t.yaw`, look at (t.x, t.z) and hold the inspecting pose (hand toward the rack, head scanning); null clears. */
     inspect(t) { inspecting = !!t; faceYaw = t ? t.yaw : null; pendingLook = t ? { x: t.x, z: t.z } : null; if (overlay) overlay.lookAt(pendingLook); },
     get ready() { return ready; },
-    reset(x, z) { path = null; onArrive = null; pose = 'idle'; faceYaw = null; reachWalk = false; atJob = false; pendingLook = null; driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); root.position.set(x, 0, z); root.rotation.y = Math.PI; if (overlay) overlay.lookAt(null); if (ready) fade(CLIP.idle, 0); },
+    reset(x, z) { path = null; onArrive = null; pose = 'idle'; faceYaw = null; reachWalk = false; atJob = false; pendingLook = null; pendingAim = null; driving = false; driveSpeed = 0; inspecting = false; walkTimeScale(WALK_SPEED); root.position.set(x, 0, z); root.rotation.y = Math.PI; if (overlay) { overlay.lookAt(null); overlay.aimAt(null); } if (ready) fade(CLIP.idle, 0); },
     get overlay() { return overlay; },
   };
   return root;

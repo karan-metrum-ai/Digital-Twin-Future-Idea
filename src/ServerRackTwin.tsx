@@ -21,11 +21,13 @@ import { LiquidHud } from './rack/liquid/LiquidHud';
 import { DEMO_ISSUES, FAULT_CABLE_ISSUE_ID, LIVE_RACK_ID, RACKS, RACK_BY_ID, leakZoneForIssue } from './rack/issues/issues';
 import { buildRackFocus, pickHit, rackFocusPose } from './rack/issues/RackFocus';
 import { IssueDetail } from './rack/issues/IssueDetail';
+import { placeDetail, type DetailPlace } from './rack/issues/detailPlacement';
 import { createReseatAnimation } from './rack/cabling/reseatAnimation';
 import { buildRemediationScene } from './rack/issues/RemediationScene';
 import { buildTechnician } from './rack/people/Technician';
-import { buildPath, nearestPatrolIndex, PATROL, standPoint, TECH_SPAWN } from './rack/people/paths';
-import { buildStops, createDriveController } from './rack/people/corridors';
+import { buildPath, buildPathWest, nearestPatrolIndex, PATROL, standPoint, TECH_SPAWN, WORK_STAND_M, workPoseFor } from './rack/people/paths';
+import { buildStops, createDriveController, NOC_STOP } from './rack/people/corridors';
+import { NocConsole, type NocData } from './rack/environment/NocConsole';
 import { buildPowerPlant } from './rack/environment/PowerPlant';
 import { buildLifeSafety } from './rack/environment/LifeSafety';
 import { buildLeakDetection } from './rack/environment/LeakDetection';
@@ -55,6 +57,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   // scene come back through `pickRef` so the render-loop closure never has to see React state.
   const [internalSel, setInternalSel] = useState<string | null>(null);
   const [openIssueId, setOpenIssueId] = useState<string | null>(null);
+  // Where the open issue's modal sits: beside the alarm card it was opened from (container px, see placeDetail), or
+  // null for the right-edge fallback. The render loop keeps it tracking the card as the camera moves (detailRef).
+  const [openPlace, setOpenPlace] = useState<DetailPlace | null>(null);
+  const openIssueRef = useRef<string | null>(null); openIssueRef.current = openIssueId;
+  const detailRef = useRef<HTMLElement | null>(null);
   const sel = selectedRack !== undefined ? selectedRack : internalSel;
   const selectRack = (id: string | null) => { setInternalSel(id); onSelectRack?.(id); };
   const pickRef = useRef(selectRack); pickRef.current = selectRack;
@@ -82,6 +89,13 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
   const [layersOpen, setLayersOpen] = useState(false);
   // Keyboard drive of the technician (arrows / WASD): null = not driving; otherwise the parked rack and any queued turn.
   const [driveUi, setDriveUi] = useState<{ stop: string | null; queued: 'left' | 'right' | null } | null>(null);
+  // Technician mode: 'auto' = does the rounds / dispatched by remediations; 'manual' = waits for the arrow keys. The
+  // toolbar switch and the first arrow press both set it; the scene mirrors it back through setTechModeState.
+  const [techMode, setTechModeState] = useState<'auto' | 'manual'>('auto');
+  // NOC desk: null = not at the desk; otherwise whether the technician has reached it yet, plus the live console numbers.
+  const [nocUi, setNocUi] = useState<{ atDesk: boolean } | null>(null);
+  const [nocData, setNocData] = useState<NocData | null>(null);
+  const setTechMode = (m: 'auto' | 'manual') => { setTechModeState(m); apiRef.current?.setTechMode(m); };
   const layersPanelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!layersOpen) return;
@@ -271,8 +285,15 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     // the corridor network, with a chase camera behind them until the mouse takes the camera over. Wired up in the
     // technician block below; ticked in the render loop.
     let driving = false, driverWants = false, followPaused = false, lastKeyMs = 0, entered = false;
-    const DRIVE_IDLE_RESUME_S = 20;               // no key (and no motion) for this long -> the rounds quietly resume (wall clock, so a starved frame rate cannot stretch it)
-    const FOLLOW = { back: 2.6, up: 1.9, side: 0.55, aheadY: 1.3, ahead: 1.2, rate: 4 };
+    // Esc released the parked inspection: the chase camera may run again even though the driver is still at the stop.
+    let stopReleased = false;
+    // Camera pose before a focus fly-in (rack select / NOC desk), so Esc can fly back out to it.
+    let preFocus: { pos: [number, number, number]; tgt: [number, number, number] } | null = null;
+    const rememberPreFocus = () => { if (!preFocus) preFocus = { pos: camera.position.toArray() as [number, number, number], tgt: controls.target.toArray() as [number, number, number] }; };
+    // Chase camera: behind and a little over the right shoulder, looking a couple of metres down the aisle ahead at
+    // chest height. Position eases slower than the look target so turns swing the view smoothly without lag on the
+    // figure itself.
+    const FOLLOW = { back: 3.2, up: 1.75, side: 0.5, ahead: 2.0, aheadY: 1.1, posRate: 3.2, tgtRate: 5 };
     const driver: any = createDriveController(buildStops(RACKS)); // plain-JS module: its state shape is documented in corridors.ts
     const camWant = new THREE.Vector3(), tgtWant = new THREE.Vector3();
     const followCamera = (dt: number) => {
@@ -280,13 +301,26 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       camWant.set(tech.position.x - fx * FOLLOW.back + rx * FOLLOW.side, FOLLOW.up, tech.position.z - fz * FOLLOW.back + rz * FOLLOW.side);
       tgtWant.set(tech.position.x + fx * FOLLOW.ahead, FOLLOW.aheadY, tech.position.z + fz * FOLLOW.ahead);
       clampToRoom(camWant); clampToRoom(tgtWant, 0.35);
-      const k = 1 - Math.exp(-FOLLOW.rate * dt);
-      camera.position.lerp(camWant, k); controls.target.lerp(tgtWant, k);
+      camera.position.lerp(camWant, 1 - Math.exp(-FOLLOW.posRate * dt)); controls.target.lerp(tgtWant, 1 - Math.exp(-FOLLOW.tgtRate * dt));
+    };
+    // Inspect shot: over the technician's right shoulder toward the rack face, so the raised hand, the device stack
+    // and the alarm card all read; the figure sits on the left third of the frame.
+    const inspectShot = (info: { x: number; z: number; rotY: number }, stop: { x: number; z: number; yaw: number }) => {
+      const fx = Math.sin(stop.yaw), fz = Math.cos(stop.yaw), rx = -Math.cos(stop.yaw), rz = Math.sin(stop.yaw);
+      const rfx = Math.sin(info.rotY), rfz = Math.cos(info.rotY); // rack forward (toward the aisle)
+      return {
+        pos: [stop.x - fx * 1.45 + rx * 1.05, 1.85, stop.z - fz * 1.45 + rz * 1.05] as [number, number, number],
+        tgt: [info.x + rfx * 0.55 - rx * 0.1, 1.2, info.z + rfz * 0.55 - rz * 0.1] as [number, number, number],
+      };
     };
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
     const setNdcFromEvent = (e: PointerEvent) => { const r = renderer.domElement.getBoundingClientRect(); pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1; pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1; };
-    const hitsFrontDoor = (e: PointerEvent) => { if (!doors) return false; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return raycaster.intersectObject(doors.hinge, true).length > 0; };
+    // The NOC desk and video wall are one click target: send the technician to the console. Both this and the front
+    // door report the distance to their nearest hit (Infinity for a miss) so a click resolves to whichever target is
+    // actually in front — a rack's alarm card must win over the NOC wall far behind it.
+    const distNoc = (e: PointerEvent) => { if (!noc.visible) return Infinity; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); const h = raycaster.intersectObject(noc, true); return h.length ? h[0].distance : Infinity; };
+    const distFrontDoor = (e: PointerEvent) => { if (!doors) return Infinity; setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); const h = raycaster.intersectObject(doors.hinge, true); return h.length ? h[0].distance : Infinity; };
     // Which rack (if any), and which issue card specifically, is under the pointer — any of the ten replicas, the
     // interactive rack, or an alarm plate/beacon.
     // World-space bounds per pickable rack so a hover/click only descends into the racks whose box the ray actually
@@ -299,7 +333,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       if (!b) { b = new THREE.Box3().setFromObject(o).expandByScalar(o === rack ? 0.75 : 0.05); pickBoxes.set(o, b); }
       return b;
     };
-    const hitUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickHit(raycaster, focus, replicas, rack, LIVE_RACK_ID, pickBoxFor) as { rackId: string | null; issueId: string | null }; };
+    const hitUnderPointer = (e: PointerEvent) => { setNdcFromEvent(e); raycaster.setFromCamera(pointerNdc, camera); return pickHit(raycaster, focus, replicas, rack, LIVE_RACK_ID, pickBoxFor) as { rackId: string | null; issueId: string | null; distance: number }; };
     // Select a rack: outline it and (optionally) fly the camera to its front three-quarter.
     const selectRackInScene = (id: string | null, flyCamera: boolean) => {
       focus.userData.select(id);
@@ -307,20 +341,34 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       // Focusing the interactive rack always reopens its door, so whatever drew the eye there (an alarm card,
       // a plain click) is never hidden behind it.
       if (id === LIVE_RACK_ID && !doorOpen) { doorOpen = true; updateDoorTargets(); }
-      if (info && flyCamera) { const p = rackFocusPose(info); flyTo(p.pos as [number, number, number], p.tgt as [number, number, number]); }
+      if (!id) preFocus = null;
+      if (info && flyCamera) { rememberPreFocus(); const p = rackFocusPose(info); flyTo(p.pos as [number, number, number], p.tgt as [number, number, number]); }
     };
+    // Issue modal anchoring: container-pixel position of an issue's alarm card (null when hidden or behind the camera),
+    // and the modal placement beside it. The click handler seeds it; the render loop keeps the open modal tracking.
+    const _anchor = new THREE.Vector3();
+    const issueAnchorPx = (issueId: string) => {
+      const plate = focus.visible ? (focus.userData.plateFor(issueId) as THREE.Object3D | null) : null; if (!plate) return null;
+      plate.getWorldPosition(_anchor).project(camera);
+      if (_anchor.z > 1) return null;
+      const w = host.clientWidth || 1, h = host.clientHeight || 1;
+      return { x: ((_anchor.x + 1) / 2) * w, y: ((1 - _anchor.y) / 2) * h, w, h };
+    };
+    const placeFor = (issueId: string, modalH?: number): DetailPlace | null => { const a = issueAnchorPx(issueId); return a ? placeDetail(a.x, a.y, a.w, a.h, modalH) : null; };
+    const openIssueAt = (issueId: string) => { setOpenIssueId(issueId); setOpenSnapshot(issuesRef.current.find((i) => i.id === issueId) ?? null); setOpenPlace(placeFor(issueId)); };
     let downX = 0, downY = 0, downT = 0;
     const onPointerDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); fly = null; followPaused = true; ambience.unlock(); };
     const onWheel = () => { followPaused = true; };
     const onPointerUp = (e: PointerEvent) => {
-      const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 600;
+      const dragged = Math.hypot(e.clientX - downX, e.clientY - downY) > 6 || performance.now() - downT > 1200; // generous hold window: on a slow frame the up-event can land a frame or two late
       if (dragged) return; // an orbit drag, not a click
-      if (hitsFrontDoor(e)) { doorOpen = !doorOpen; updateDoorTargets(); return; }
-      const hit = hitUnderPointer(e);
+      const hit = hitUnderPointer(e), dDoor = distFrontDoor(e), dNoc = distNoc(e);
+      if (dDoor < hit.distance && dDoor <= dNoc) { doorOpen = !doorOpen; updateDoorTargets(); return; }
+      if (dNoc < hit.distance) { goToNoc(); return; }
       if (hit.rackId) pickRef.current(hit.rackId); // React owns the selection; it flows back down through api.selectRack
       // Clicking an alarm card opens its detail modal; clicking empty space (no rack under the pointer at all)
       // dismisses whatever's open. Clicking a rack elsewhere leaves an open modal as-is.
-      if (hit.issueId) { setOpenIssueId(hit.issueId); setOpenSnapshot(issuesRef.current.find((i) => i.id === hit.issueId) ?? null); }
+      if (hit.issueId) openIssueAt(hit.issueId);
       else if (!hit.rackId) setOpenIssueId(null);
     };
     let lastHoverMs = 0;
@@ -328,7 +376,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       const now = performance.now();
       if (now - lastHoverMs < 80) return;
       lastHoverMs = now;
-      renderer.domElement.style.cursor = hitsFrontDoor(e) || hitUnderPointer(e).rackId ? 'pointer' : '';
+      renderer.domElement.style.cursor = distFrontDoor(e) < Infinity || distNoc(e) < Infinity || hitUnderPointer(e).rackId ? 'pointer' : '';
     };
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
@@ -359,7 +407,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       focus.userData.tick(t);
       if (!thermal.active) { const mode = powerEvt.info.ledMode; leds.forEach((m) => { m.emissiveIntensity = ledIntensity(m.userData.pattern ?? 'activity', t, m.userData.seed ?? 0, mode); }); }
       // NOC wall + ambience mix at ~1 Hz / every few frames — both cheap, neither needs per-frame precision.
-      if (t - nocDrawnAt > 1) { nocDrawnAt = t; noc.userData.draw({ loop: loopSim.state(), issues: issuesRef.current, power: powerEvt.info }); }
+      if (t - nocDrawnAt > 1) {
+        nocDrawnAt = t; noc.userData.draw({ loop: loopSim.state(), issues: issuesRef.current, power: powerEvt.info });
+        if (atNoc) { const s = loopSim.state().latest; const itKw = s ? s.heatKw + 8 : 92, coolKw = s ? s.cduKw + itKw * 0.09 : 18, lossKw = itKw * 0.045 + 6; nocHist.push(itKw); if (nocHist.length > 90) nocHist.shift();
+          setNocData({ pue: (itKw + coolKw + lossKw) / itKw, itKw, coolKw, lossKw, supplyC: s ? s.supplyC : null, dT: s ? s.dT : null, flowLpm: s ? s.flowLpm : null, source: powerEvt.info.source, upsPct: powerEvt.info.upsPct, upsMode: powerEvt.info.upsMode, history: [...nocHist] }); }
+      }
       if ((++nocFrame % 6) === 0) { const d = Math.min(camera.position.distanceTo(NOISE_A), camera.position.distanceTo(NOISE_B), camera.position.distanceTo(NOISE_X)); ambience.tick(1 - THREE.MathUtils.clamp((d - 1.5) / 7, 0, 1), powerEvt.info.genRunning ? 1 : 0); }
       // Disconnected patch cable: sharp red 'beep' (fast rise, quick decay) rather than a soft sine, so it reads as an alarm.
       if (reseat) { reseat.tick(t); if (reseat.pulsing) { const k = Math.pow(0.5 + 0.5 * Math.sin(t * 4.2), 3); faultCable.material.emissiveIntensity = 0.6 + 2.6 * k; } }
@@ -368,14 +420,17 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         const f = driver.tick(dt);
         tech.userData.drive(f);
         if (f.event === 'stop' && f.stop) {
-          // Parked in front of a rack: turn to it and inspect; the camera hands off to the rack's focus shot.
-          const info = RACK_BY_ID[f.stop.id];
-          tech.userData.inspect({ x: info.x, z: info.z, yaw: f.stop.yaw });
-          if (!followPaused) { const pz = rackFocusPose(info); flyTo(pz.pos as [number, number, number], pz.tgt as [number, number, number]); }
+          stopReleased = false;
+          if (f.stop.id === NOC_STOP.id) standAtNoc();
+          else {
+            // Parked in front of a rack: turn to it and inspect; the camera hands off to the rack's focus shot.
+            const info = RACK_BY_ID[f.stop.id];
+            tech.userData.inspect({ x: info.x, z: info.z, yaw: f.stop.yaw });
+            if (!followPaused) { const pz = inspectShot(info, f.stop); flyTo(pz.pos, pz.tgt); }
+          }
           setDriveUi({ stop: f.stop.id, queued: driver.state.pending });
-        } else if (f.event === 'leave') { tech.userData.inspect(null); setDriveUi({ stop: null, queued: driver.state.pending }); }
+        } else if (f.event === 'leave') { tech.userData.inspect(null); if (atNoc) leaveNoc(false); setDriveUi({ stop: null, queued: driver.state.pending }); }
         if (f.anyKey || f.moving) lastKeyMs = performance.now();
-        else if (performance.now() - lastKeyMs > DRIVE_IDLE_RESUME_S * 1000) endDrive(true);
       }
       tech.userData.tick(t, dt); env.userData.tick(t);
       if (powerEvt.active) { powerEvt.tick(t); applyPower(); } power.userData.tick(t); leak.userData.tick(t);
@@ -393,9 +448,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         if (doors.hingeTargetY !== undefined) { const d = doors.hingeTargetY - doors.hinge.rotation.y; if (Math.abs(d) > 1e-3) { doorMoving = true; doors.hinge.rotation.y += d * kDoor; } }
         if (doors.rdTargetZ !== undefined) { const d = doors.rdTargetZ - doors.rd.position.z; if (Math.abs(d) > 1e-4) { doorMoving = true; doors.rd.position.z += d * kDoor; } }
       }
-      if (driving && !fly && !followPaused && !driver.state.atStop) followCamera(dt);
+      if (driving && !fly && !followPaused && (!driver.state.atStop || stopReleased)) followCamera(dt);
       controls.update();
       clampToRoom(camera.position); clampToRoom(controls.target, 0.35);
+      // Keep the open issue modal beside its alarm card while the camera moves (direct style writes: no React churn).
+      { const oid = openIssueRef.current, el = detailRef.current; if (oid && el && el.dataset.anchored === '1') { camera.updateMatrixWorld(); const pl = placeFor(oid, el.offsetHeight || undefined); if (pl) { el.style.left = `${pl.left}px`; el.style.top = `${pl.top}px`; } } }
       // Shadow pass: every frame while a caster is on the move, else every 2nd frame while the technician is working
       // at a rack (arms moving), else every 3rd frame (idle breathing only).
       const casterMoving = tech.userData.walking || doorMoving || explodeMoving || env.userData.doorMoving;
@@ -428,12 +485,15 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
     };
     // Badge in through the staff door, then start the rounds.
     env.userData.setDoorOpen(true); env.userData.badgeRead(sceneTime(), 1.5);
-    tech.userData.walkTo([TECH_SPAWN, PATROL[0]]).then(() => { env.userData.setDoorOpen(false); entered = true; if (!techJob && !driving) patrolFrom(1); });
-    const dispatchTech = (issue: { id: string; rackId: string }) => {
+    tech.userData.walkTo([TECH_SPAWN, PATROL[0]]).then(() => { env.userData.setDoorOpen(false); entered = true; if (!techJob && !driving) { if (driverWants) beginDrive(); else patrolFrom(1); } });
+    const dispatchTech = (issue: { id: string; rackId: string; u: number }) => {
       const info = RACK_BY_ID[issue.rackId]; if (!info) return;
       const wasDriving = driving; if (wasDriving) endDrive(false); driverWants = wasDriving; // the job takes over; control comes back afterwards
+      if (atNoc) leaveNoc(false); nocWalkToken++;
       patrolToken++; // stop the rounds
-      const path = buildPath(techPos(), info), stand = standPoint(info);
+      // Stand far enough back for the pose the job needs, so neither the kneeling head nor the working hand pushes through the rack front.
+      const st = WORK_STAND_M[workPoseFor(issue.u)];
+      const path = buildPath(techPos(), info, st.dist, st.side), stand = standPoint(info, st.dist, st.side);
       techJob = { issueId: issue.id, arrived: false, pendingAct: null, path };
       const job = techJob;
       ambience.chirp('badge');
@@ -446,24 +506,94 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         job.arrived = true; const act = job.pendingAct; job.pendingAct = null; act?.();
       });
     };
-    const techWorkAt = (u: number) => tech.userData.setPose(u <= 14 ? 'kneel' : 'reach');
+    /**
+     * Work on the device at `u`: kneel for the bottom third of the rack (authored kneeling fix), otherwise stand and put
+     * the right hand on the unit — `target` is the world point of the FRU face (drawn out toward the technician) or the
+     * exact port for the cable reseat — with the eyes following the hand.
+     */
+    const techWorkAt = (u: number, target: THREE.Vector3 | null) => {
+      const pose = workPoseFor(u);
+      tech.userData.setPose(pose);
+      tech.userData.workAt(pose === 'reach' && target ? target : null);
+    };
+    /** World point on a rack's front face at the middle of the device occupying `u`..`u+hU-1`, `out` metres proud of the bezels. */
+    const deviceFacePoint = (info: { x: number; z: number; rotY: number }, u: number, hU: number, out: number) => {
+      const y = 0.13 + (u - 1) * 0.04445 + (hU * 0.04445) / 2, fwd = 0.535 - 0.03 + out;
+      return new THREE.Vector3(info.x + Math.sin(info.rotY) * fwd, y, info.z + Math.cos(info.rotY) * fwd);
+    };
     const resumePatrol = () => { const p = techPos(); techJob = null; tech.userData.lookAt(null); if (driverWants && tech.visible) { driverWants = false; beginDrive(); } else patrolFrom(nearestPatrolIndex(p)); };
     const techLeave = () => {
       const job = techJob; if (!job) return;
-      tech.userData.setPose('idle'); tech.userData.lookAt(null);
-      // Step back from the rack to the corridor point they came in on, then pick the rounds back up from there.
-      const back = job.path.length >= 2 ? [techPos(), job.path[job.path.length - 2]] : [techPos()];
-      tech.userData.walkTo(back).then(() => { if (techJob === job) resumePatrol(); });
+      const wasKneeling = tech.userData.pose === 'kneel';
+      tech.userData.workAt(null); tech.userData.setPose('idle'); tech.userData.lookAt(null);
+      // Stand up / lower the hand first, then step back from the rack to the corridor point they came in on and pick
+      // the rounds (or the keyboard) back up from there.
+      window.setTimeout(() => {
+        if (techJob !== job) return;
+        const back = job.path.length >= 2 ? [techPos(), job.path[job.path.length - 2]] : [techPos()];
+        tech.userData.walkTo(back).then(() => { if (techJob === job) resumePatrol(); });
+      }, wasKneeling ? 1100 : 600);
     };
-    const techReset = () => { if (techJob) { tech.userData.setPose('idle'); resumePatrol(); } };
+    const techReset = () => { if (techJob) { tech.userData.workAt(null); tech.userData.setPose('idle'); resumePatrol(); } };
 
-    // Keyboard drive: the first arrow / WASD press takes the technician off the rounds; they then walk the corridor
-    // network under the user's keys (Up/Down walk forward/back, Left/Right queue a turn for the next junction) and,
-    // when let go within half a metre of a rack's stand point, step onto it and inspect the rack. The rounds resume
-    // after DRIVE_IDLE_RESUME_S without a key; a remediation dispatch always takes over and hands back afterwards.
+    // NOC desk (no chair — a standing console). Clicking the desk / video wall sends the technician there (from the
+    // rounds or from the keyboard); letting go of the keys at the NOC stop does the same. They stand at the desk,
+    // hand to the keyboard, eyes on the wall; the camera takes the operator's point of view and the live NOC console
+    // panel becomes active. Any arrow key, Esc, "Leave desk" or the Auto switch hands them back to whichever mode
+    // was active.
+    let atNoc = false; const nocHist: number[] = [];
+    const KEYBOARD_POINT = new THREE.Vector3(NOC_STOP.x - 0.55, 0.78, NOC_STOP.z + 0.06); // desk near edge, a standing lean from the stop
+    const WALL_POINT = new THREE.Vector3(NOC_STOP.x - 1.85, 2.2, NOC_STOP.z);            // eyes on the video wall
+    const standAtNoc = () => {
+      if (atNoc) return;
+      atNoc = true;
+      tech.userData.inspect(null); tech.userData.face(NOC_STOP.yaw); tech.userData.setPose('reach'); tech.userData.workAt(KEYBOARD_POINT, WALL_POINT); tech.userData.lookAt(null);
+      // Operator's point of view: just behind the head, looking at the video wall.
+      rememberPreFocus();
+      flyTo([NOC_STOP.x + 0.8, 2.0, NOC_STOP.z + 0.3], [NOC_STOP.x - 1.85, 2.15, NOC_STOP.z]);
+      followPaused = true;
+      setNocUi({ atDesk: true });
+    };
+    const leaveNoc = (resume: boolean) => {
+      if (!atNoc) return;
+      atNoc = false; setNocUi(null); preFocus = null;
+      tech.userData.workAt(null); tech.userData.setPose('idle');
+      if (driving) { driver.begin({ x: NOC_STOP.x, z: NOC_STOP.z }, Math.PI / 2); followPaused = false; }
+      else if (resume) { window.setTimeout(() => { if (!atNoc && !techJob && !driving) { if (driverWants) beginDrive(); else patrolFrom(nearestPatrolIndex(techPos())); } }, 700); }
+    };
+    const goToNoc = () => {
+      if (atNoc || techJob || !entered || !tech.visible) return;
+      const wasDriving = driving; if (wasDriving) endDrive(false); driverWants = wasDriving;
+      patrolToken++;
+      const token = ++nocWalkToken;
+      tech.userData.setPose('idle');
+      tech.userData.walkTo(buildPathWest(techPos(), { x: NOC_STOP.x, z: NOC_STOP.z })).then(() => { if (nocWalkToken !== token || techJob) return; standAtNoc(); });
+      setNocUi({ atDesk: false });
+    };
+    /**
+     * Esc — out of focus: closes the open incident modal, releases the outlined rack (camera flies back to where it
+     * was before the fly-in), steps the technician off a parked inspection or the NOC desk, and in Manual hands
+     * the camera back to the chase view behind them.
+     */
+    const releaseFocus = () => {
+      setOpenIssueId(null);
+      const back = preFocus; preFocus = null;
+      if (atNoc) leaveNoc(true);
+      if (driving) { tech.userData.inspect(null); stopReleased = true; fly = null; followPaused = false; setDriveUi({ stop: null, queued: driver.state.pending }); }
+      else if (back) flyTo(back.pos, back.tgt);
+      if (focus.userData.selectedId) { selectRackInScene(null, false); pickRef.current(null); } // clear the outline now; React's selection follows
+    };
+    let nocWalkToken = 0;
+
+    // Manual mode (keyboard drive): the toolbar switch or the first arrow / WASD press takes the technician off the
+    // rounds; they then walk the corridor network under the user's keys (Up/Down walk forward/back, Left/Right queue
+    // a turn for the next junction) and, when let go within half a metre of a rack's stand point, step onto it and
+    // inspect the rack. They wait there until the next key or until Auto is chosen again; a remediation dispatch
+    // always takes over and hands back to whichever mode was active.
     const beginDrive = () => {
       if (driving) return;
-      driving = true; driverWants = true; lastKeyMs = performance.now(); followPaused = false;
+      nocWalkToken++;
+      driving = true; driverWants = true; lastKeyMs = performance.now(); followPaused = false; stopReleased = false; setTechModeState('manual');
       patrolToken++; // stop the rounds (their setTimeout chain checks the token)
       tech.userData.stop(); tech.userData.lookAt(null);
       driver.begin(techPos(), tech.rotation.y);
@@ -474,16 +604,25 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       driving = false; driverWants = false; driver.releaseAll();
       tech.userData.inspect(null); tech.userData.drive(null);
       setDriveUi(null);
-      if (resumeRounds && !techJob) patrolFrom(nearestPatrolIndex(techPos()));
+      if (resumeRounds) { setTechModeState('auto'); if (!techJob) patrolFrom(nearestPatrolIndex(techPos())); }
+    };
+    /** Toolbar / API: 'manual' hands the technician to the keyboard (now, or as soon as they are free); 'auto' resumes the rounds. */
+    const setTechModeInScene = (m: 'auto' | 'manual') => {
+      if (m === 'manual') { if (!entered || techJob) { driverWants = true; setTechModeState('manual'); } else beginDrive(); }
+      else { driverWants = false; nocWalkToken++; if (atNoc) leaveNoc(false); if (driving) endDrive(true); else { setTechModeState('auto'); if (entered && !techJob) { patrolToken++; patrolFrom(nearestPatrolIndex(techPos())); } } }
     };
     const KEYMAP: Record<string, 'up' | 'down' | 'left' | 'right'> = { ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', w: 'up', s: 'down', a: 'left', d: 'right' };
     const keyOf = (e: KeyboardEvent) => KEYMAP[e.code] ?? KEYMAP[e.key] ?? null;
     const typingTarget = (e: KeyboardEvent) => { const el = e.target as HTMLElement | null; return !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable); };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !typingTarget(e)) { releaseFocus(); return; }
       const k = keyOf(e); if (!k || typingTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return;
       if (!tech.visible || !entered || techJob) return; // hidden layer, still badging in, or a dispatch owns them
       e.preventDefault(); if (e.repeat) return;         // held state is tracked; OS auto-repeat adds nothing
+      nocWalkToken++;                                    // a key while walking to the desk cancels that errand
+      if (atNoc && !driving) { leaveNoc(false); }        // at the desk from the rounds: step off and take the keys
       beginDrive(); lastKeyMs = performance.now(); followPaused = false;
+      if (atNoc) leaveNoc(false);
       driver.press(k);
       if (k === 'left' || k === 'right') setDriveUi({ stop: driver.state.atStop?.id ?? null, queued: driver.state.pending });
     };
@@ -509,7 +648,7 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       setTemps(a: number[]) { thermal.setTemps(a); loopSim.setLoad(a); },
       loopState() { return loopSim.state(); },
       /** Jump the camera (no animation) — used by tooling/screenshots; `flyTo` is the animated version. */
-      setCamera(pos: [number, number, number], tgt: [number, number, number]) { fly = null; camera.position.set(...pos); controls.target.set(...tgt); clampToRoom(camera.position); clampToRoom(controls.target, 0.35); controls.update(); },
+      setCamera(pos: [number, number, number], tgt: [number, number, number]) { fly = null; camera.position.set(...pos); controls.target.set(...tgt); clampToRoom(camera.position); clampToRoom(controls.target, 0.35); controls.update(); camera.updateMatrixWorld(true); /* picking right after a jump must not see the old view */ },
       flyTo,
       setExplode(t: number) {
         explodeItems.forEach((it) => it.target.set(it.ex * t, it.ey * t, it.ez * t));
@@ -553,7 +692,12 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
           if (isFaultCable) { doorOpen = true; updateDoorTargets(); }
           if (!techJob || techJob.issueId !== issue.id) dispatchTech(issue);
           const act = () => {
-            techWorkAt(issue.u);
+            const hU = focus.userData.deviceUnits(issue) as number;
+            const target = isFaultCable
+              ? rack.localToWorld(new THREE.Vector3(faultCable.port.x, faultCable.port.y, faultCable.port.z))
+              : deviceFacePoint(info, issue.u, hU, issue.remediation?.fru === 'none' ? 0.02 : 0.12);
+            // A short beat facing the rack before the hands go in reads as sizing the job up rather than lunging at it.
+            window.setTimeout(() => { if (techJob?.issueId === issue.id) techWorkAt(issue.u, target); }, 350);
             remScene.userData.set(issue, 'confirmed', {
               onClick: () => ambience.chirp('click'),
               onDone: (id: string) => {
@@ -589,6 +733,18 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
       techDrive(forward: -1 | 0 | 1, turn: -1 | 0 | 1 = 0) { if (!tech.visible || techJob || !entered) return false; beginDrive(); lastKeyMs = performance.now(); driver.setAxes(forward, turn); return true; },
       techDriving() { const st = driver.state; return { driving, entered, facing: st.facing, pending: st.pending, atStop: st.atStop?.id ?? null, speed: st.speed, settling: st.settling, inspecting: tech.userData.inspecting, followPaused, idleS: Math.round((performance.now() - lastKeyMs) / 100) / 10 }; },
       techStopDrive(resumeRounds = true) { endDrive(resumeRounds); },
+      setTechMode(m: 'auto' | 'manual') { setTechModeInScene(m); },
+      /** NOC desk hooks: send the technician to the console / stand them up; state for tooling. */
+      goToNoc() { goToNoc(); return atNoc || nocWalkToken > 0; },
+      leaveNoc() { leaveNoc(true); },
+      nocState() { return { atDesk: atNoc, pose: tech.userData.pose }; },
+      /** Esc equivalent for tooling: drop the modal / rack focus / parked inspection / NOC desk. */
+      releaseFocus() { releaseFocus(); },
+      /** Modal placement beside an issue's alarm card right now (null if the card is hidden or off-screen). */
+      issuePlace(id: string) { return placeFor(id); },
+      /** Container-pixel centre of an issue's alarm card (tooling: where to click to open it). */
+      issueAnchor(id: string) { camera.updateMatrixWorld(); return issueAnchorPx(id); },
+      techMode() { return driving || driverWants ? 'manual' : 'auto'; },
       /** Outline rack `id` (null clears) and, when `flyCamera`, fly to its front three-quarter. */
       selectRack(id: string | null, flyCamera = true) { selectRackInScene(id, flyCamera); },
       /** Replace the open-issue list — rebuilds the alarm plates and roof beacons on the racks. */
@@ -666,6 +822,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         <span style={{ width: 1, background: 'rgba(255,255,255,0.12)', margin: '4px 3px' }} />
         <button onClick={() => setLayersOpen((o) => !o)} aria-expanded={layersOpen} aria-controls="scene-items-panel" title="Choose which parts of the hall are shown" style={{ appearance: 'none', border: 0, background: layersOpen ? 'rgba(255,255,255,0.10)' : 'transparent', color: '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 10px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>Scene items {layersOpen ? '▴' : '▾'}</button>
         <button onClick={() => setAudioOn((a) => !a)} aria-pressed={audioOn} title={audioOn ? 'Mute hall ambience' : 'Hall ambience: fan hum, alarms, badge reader'} style={{ appearance: 'none', border: 0, background: audioOn ? 'rgba(255,255,255,0.10)' : 'transparent', color: audioOn ? '#eef0f4' : '#aeb3bc', font: '500 12px/1 inherit', padding: '8px 10px', borderRadius: 6, cursor: 'pointer' }}>{audioOn ? '🔊' : '🔇'}</button>
+        <span style={{ width: 1, background: 'rgba(255,255,255,0.12)', margin: '4px 3px' }} />
+        <span title="Technician mode" style={{ color: '#7c8290', font: '500 11px/1 inherit', letterSpacing: '0.04em', padding: '0 4px 0 6px', alignSelf: 'center', textTransform: 'uppercase' }}>Technician</span>
+        {(['auto', 'manual'] as const).map((m) => (
+          <button key={m} onClick={() => setTechMode(m)} aria-pressed={techMode === m} title={m === 'auto' ? 'Technician does rounds of the hall and answers remediation dispatches' : 'Drive the technician with the arrow keys / WASD; stop in front of a rack to inspect it'} style={{ appearance: 'none', border: 0, background: techMode === m ? '#eef0f4' : 'transparent', color: techMode === m ? '#16171b' : '#aeb3bc', font: '500 12px/1 inherit', letterSpacing: '0.04em', padding: '8px 10px', borderRadius: 6, cursor: 'pointer' }}>{m === 'auto' ? '🚶 Auto' : '⌨ Manual'}</button>
+        ))}
       </div>
       {layersOpen && (
         <div ref={layersPanelRef} id="scene-items-panel" role="group" aria-label="Scene items" style={{ position: 'absolute', top: 60, left: 20, width: 300, maxHeight: 'calc(100% - 140px)', overflowY: 'auto', background: 'rgba(12,13,16,0.86)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: '10px 12px 12px', backdropFilter: 'blur(10px)', color: '#eef0f4', fontSize: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', scrollbarWidth: 'thin' }}>
@@ -711,7 +872,8 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         </>
       )}
       {liquidOn && <LiquidHud state={liquidState} />}
-      <IssueDetail issue={openIssue} rack={openIssueRack} onClose={() => setOpenIssueId(null)} remediation={remediation} remediationNote={remediationNote} onRemediate={onRemediate} />
+      {nocUi && !openIssue && <NocConsole data={nocData} issues={issues} atDesk={nocUi.atDesk} onOpenIssue={(id) => { setOpenIssueId(id); setOpenSnapshot(issues.find((i) => i.id === id) ?? null); setOpenPlace(apiRef.current?.issuePlace(id) ?? null); }} onLeave={() => apiRef.current?.leaveNoc()} />}
+      <IssueDetail ref={detailRef} issue={openIssue} rack={openIssueRack} place={openPlace} onClose={() => setOpenIssueId(null)} remediation={remediation} remediationNote={remediationNote} onRemediate={onRemediate} />
       <div style={{ position: 'absolute', left: 20, bottom: 18, color: '#c9ccd3', fontSize: 12, letterSpacing: '0.04em', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {powerPhase !== 'utility' && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, alignSelf: 'flex-start', padding: '5px 10px', borderRadius: 6, background: powerPhase === 'utility_restored' ? 'rgba(12,163,12,0.14)' : 'rgba(255,160,32,0.14)', border: `1px solid ${powerPhase === 'utility_restored' ? 'rgba(12,163,12,0.5)' : 'rgba(255,160,32,0.5)'}`, color: '#eef0f4', fontWeight: 600 }}>
@@ -722,11 +884,11 @@ export default function ServerRackTwin({ temps, view, onViewChange, showCovers =
         {driveUi && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, alignSelf: 'flex-start', padding: '5px 10px', borderRadius: 6, background: 'rgba(90,176,255,0.14)', border: '1px solid rgba(90,176,255,0.5)', color: '#eef0f4', fontWeight: 600 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#5ab0ff', boxShadow: '0 0 8px currentColor' }} />
-            {driveUi.stop ? `Inspecting Rack ${driveUi.stop} · any arrow to walk on` : `Driving the technician · ↑↓ walk · ←→ turn${driveUi.queued ? ` · ${driveUi.queued === 'left' ? '↰' : '↱'} at the next junction` : ''}`}
+            {driveUi.stop === 'NOC' ? 'At the NOC desk · any arrow or Esc to leave it' : driveUi.stop ? `Inspecting Rack ${driveUi.stop} · Esc to step back · any arrow to walk on` : `Manual · ↑ walk · ↓ turn round · ←→ turn${driveUi.queued ? ` · ${driveUi.queued === 'left' ? '↰' : '↱'} at the next junction` : ' · let go in front of a rack to inspect it'}`}
           </span>
         )}
         <b style={{ fontSize: 14, color: '#eef0f4' }}>{liquidOn ? '42U rack · direct-to-chip liquid cooled' : '42U enterprise rack'}</b>
-        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open or close it · arrow keys / WASD walk the technician, stop in front of a rack to inspect it · Scene items ▾ to show/hide parts of the hall{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
+        <span>Drag to orbit · wheel to zoom · right-drag to pan · click any rack to focus it · click the front door to open or close it · click the NOC desk to put the technician on the console · Esc to leave whatever is focused · Technician ⌨ Manual (or any arrow key) to walk them yourself, 🚶 Auto for the rounds · Scene items ▾ to show/hide parts of the hall{liquidOn && ' · orbit to the rear for the manifolds and CDU'}</span>
       </div>
     </div>
   );

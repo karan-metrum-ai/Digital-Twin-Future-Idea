@@ -10,7 +10,13 @@
 import { COLD_A_Z, COLD_B_Z, END_E_X, END_W_X, TECH_SPAWN, standPoint } from './paths.ts';
 
 export const SPUR_X = 4.0;                 // approach lane to the free-standing live rack X-01
-export const SPUR_END_Z = -1.38;           // == X-01's stand point, the lane's dead end
+export const SPUR_END_Z = -1.0;            // == X-01's manual stand point (square in front of it), the lane's dead end
+/** NOC operator desk (environment/NocWall.ts): there is no chair — the operator works standing. The stop is the
+ *  standing point itself, ~0.55 m off the desk's near edge (x = -7.0) facing the wall, so a standing reach puts the
+ *  hand on the keyboard; it doubles as the dead end of the desk lane. */
+export const NOC_STOP = { id: 'NOC', x: -6.45, z: -1.0, yaw: -Math.PI / 2, segId: 'noc', offSeg: 0 };
+/** Manual-mode stand: one metre out, centred on the rack front (the dispatch walk's stand sits a step to the side for the camera). */
+export const STAND = { dist: 1.0, side: 0 };
 
 /** axis = the coordinate that varies along the segment, `at` = the fixed one; from < to. */
 export const SEGMENTS = [
@@ -20,6 +26,7 @@ export const SEGMENTS = [
   { id: 'rowB', axis: 'x', at: COLD_B_Z, from: END_W_X, to: END_E_X },
   { id: 'east', axis: 'z', at: END_E_X, from: COLD_B_Z, to: COLD_A_Z },
   { id: 'spur', axis: 'z', at: SPUR_X, from: SPUR_END_Z, to: COLD_A_Z },
+  { id: 'noc', axis: 'x', at: NOC_STOP.z, from: NOC_STOP.x, to: END_W_X },    // across the open floor from the west passage to the NOC desk
 ];
 
 const ON_SEG_TOL = 0.03;
@@ -141,7 +148,8 @@ export function advance(p, facing, travel, dist, pending = null) {
 /* ---------------- stops ---------------- */
 /** One stop per rack: its stand point (paths.standPoint) plus the corridor segment it lies on. */
 export function buildStops(racks) {
-  return racks.map((r) => { const s = standPoint(r); const snap = snapToCorridor(s); return { id: r.id, x: s.x, z: s.z, yaw: s.yaw, segId: snap.seg.id, offSeg: snap.dist }; });
+  const rackStops = racks.map((r) => { const s = standPoint(r, STAND.dist, STAND.side); const snap = snapToCorridor(s); return { id: r.id, x: s.x, z: s.z, yaw: s.yaw, segId: snap.seg.id, offSeg: snap.dist }; });
+  return [...rackStops, { ...NOC_STOP }]; // plus the NOC desk: letting go there puts the technician on the console instead of inspecting a rack
 }
 
 /** The stop within `radius` of `p` that shares a corridor segment with it (nearest wins), or null. */
@@ -154,14 +162,14 @@ export function nearestStop(p, stops, radius = 0.5) {
 
 /* ---------------- controller ---------------- */
 /**
- * Held keys -> per-frame kinematics. Up/Down walk forward / back-pedal (facing unchanged); Left/Right queue a 90°
- * turn that is taken at the next junction with that branch (immediately when already standing at one). Standing
- * still within `stopRadius` of a rack's stand point eases onto it and reports a 'stop' event; the next key press
- * reports 'leave'.
+ * Held keys -> per-frame kinematics. Up walks forward; Down turns the technician round (a short pivot in place, then
+ * walks forward the other way while held — they never walk backwards); Left/Right queue a 90° turn that is taken at
+ * the next junction with that branch (immediately when already standing at one). Standing still within `stopRadius`
+ * of a rack's stand point eases onto it and reports a 'stop' event; the next key press reports 'leave'.
  */
 export function createDriveController(stops, opts = {}) {
-  const o = { walk: 1.5, back: 0.9, settle: 0.8, accel: 8, decel: 18, stopRadius: 0.5, junctionSnap: 0.35, ...opts }; // decel: brake fast on release so the figure parks where the key was let go
-  const st = { pos: { x: 0, z: 0 }, facing: { dx: 0, dz: 1 }, speed: 0, held: new Set(), pending: null, atStop: null, settleTo: null, leavePending: false };
+  const o = { walk: 1.5, settle: 0.8, accel: 8, decel: 18, stopRadius: 0.5, junctionSnap: 0.35, pivotS: 0.38, ...opts }; // decel: brake fast on release so the figure parks where the key was let go; pivotS: time to turn round before walking on
+  const st = { pos: { x: 0, z: 0 }, facing: { dx: 0, dz: 1 }, speed: 0, held: new Set(), pending: null, atStop: null, settleTo: null, leavePending: false, pivotT: 0 };
   const approach = (cur, goal, dt, rate) => cur + (goal - cur) * (1 - Math.exp(-rate * dt));
   const leaveStop = () => { if (st.atStop) { st.atStop = null; st.leavePending = true; } st.settleTo = null; };
   const nodeWithBranchNear = () => {
@@ -174,8 +182,9 @@ export function createDriveController(stops, opts = {}) {
     return best;
   };
   const tick = (dt) => {
-    const fwd = st.held.has('up') && !st.held.has('down') ? 1 : st.held.has('down') && !st.held.has('up') ? -1 : 0;
-    const targetSpeed = fwd > 0 ? o.walk : fwd < 0 ? -o.back : 0;
+    st.pivotT = Math.max(0, st.pivotT - dt);
+    const fwd = (st.held.has('up') || st.held.has('down')) && st.pivotT <= 0 ? 1 : 0; // both keys walk forward; Down already flipped the facing on press
+    const targetSpeed = fwd > 0 ? o.walk : 0;
     st.speed = approach(st.speed, targetSpeed, dt, targetSpeed === 0 ? o.decel : o.accel);
     if (Math.abs(st.speed) < 0.02 && fwd === 0) st.speed = 0;
     let event = st.leavePending ? 'leave' : null; st.leavePending = false;
@@ -185,7 +194,7 @@ export function createDriveController(stops, opts = {}) {
       const r = advance(st.pos, st.facing, forward ? st.facing : reverse(st.facing), Math.abs(st.speed) * dt, forward ? st.pending : null);
       st.pos = r.p; if (r.turned) { st.facing = r.h; st.pending = null; }
       if (r.blocked) st.speed = 0;
-    } else if (fwd === 0) {
+    } else if (fwd === 0 && st.pivotT <= 0) {
       if (st.pending && !st.settleTo) {
         if (isNode(st.pos)) { const r = advance(st.pos, st.facing, st.facing, 0, st.pending); if (r.turned) { st.facing = r.h; st.pending = null; } }
         else { const n = nodeWithBranchNear(); if (n) st.settleTo = { x: n.x, z: n.z, node: true }; }
@@ -202,13 +211,14 @@ export function createDriveController(stops, opts = {}) {
         }
       }
     }
-    const moving = Math.abs(st.speed) > 0.02 || settleSpeed > 0;
+    const moving = Math.abs(st.speed) > 0.02 || settleSpeed > 0 || st.pivotT > 0;
     return { x: st.pos.x, z: st.pos.z, yaw: st.atStop ? st.atStop.yaw : yawOf(st.facing), speed: settleSpeed || st.speed, moving, stop: st.atStop, event, anyKey: st.held.size > 0 };
   };
   return {
     begin(p, yaw) { const s = snapToCorridor(p); st.pos = { x: s.x, z: s.z }; st.facing = headingFor(st.pos, yaw); st.speed = 0; st.pending = null; st.atStop = null; st.settleTo = null; st.leavePending = false; st.held.clear(); },
     press(k) {
-      if (k === 'up' || k === 'down') { st.held.add(k); leaveStop(); }
+      if (k === 'up') { st.held.add(k); leaveStop(); }
+      else if (k === 'down') { st.held.add(k); leaveStop(); st.facing = reverse(st.facing); st.pending = null; st.speed = 0; st.settleTo = null; st.pivotT = o.pivotS; } // about-turn, pivot, then walk on
       else if (k === 'left' || k === 'right') { st.pending = k; leaveStop(); }
     },
     release(k) { st.held.delete(k); },
@@ -216,6 +226,6 @@ export function createDriveController(stops, opts = {}) {
     /** Dev/tooling: forward -1|0|1 sets the held walk keys; turn -1 (left) | 1 (right) queues a turn. */
     setAxes(forward, turn = 0) { st.held.clear(); if (forward > 0) this.press('up'); if (forward < 0) this.press('down'); if (turn) this.press(turn < 0 ? 'left' : 'right'); },
     tick,
-    get state() { return { pos: { ...st.pos }, facing: { ...st.facing }, pending: st.pending, atStop: st.atStop, speed: st.speed, settling: !!st.settleTo }; },
+    get state() { return { pos: { ...st.pos }, facing: { ...st.facing }, pending: st.pending, atStop: st.atStop, speed: st.speed, settling: !!st.settleTo, pivoting: st.pivotT > 0 }; },
   };
 }

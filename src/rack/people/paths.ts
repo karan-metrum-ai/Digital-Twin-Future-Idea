@@ -18,12 +18,24 @@ export const COLD_B_Z = -3.27;
 export const END_E_X = 3.7;
 export const END_W_X = -3.7;
 
+/**
+ * Where to stand for each work pose (distance from the rack centre, sideways step), from the rig's measured geometry:
+ * the front face is 0.535 m from the centre; the kneeling clip (Fixing_Kneeling) carries the head 0.47 m ahead of the
+ * feet, so 1.2 m keeps it 0.2 m clear of the bezels; standing work is placed by the arm IK, whose reach from the
+ * shoulder (which sits 0.14 m behind the feet in the idle stance) is ~0.5 m, so the technician stands 0.95 m out and
+ * only a small step to the side — the drawn-out FRU (0.24 m proud) then ends 0.18 m short of the body and the hand
+ * lands on it.
+ */
+export const WORK_STAND_M: Record<'kneel' | 'reach', { dist: number; side: number }> = { kneel: { dist: 1.2, side: -0.38 }, reach: { dist: 0.95, side: -0.25 } };
+export const workPoseFor = (u: number): 'kneel' | 'reach' => (u <= 14 ? 'kneel' : 'reach');
+
 /** Rack forward vector in plan: racks face +z at rotY = 0. */
 const forward = (info: RackInfo) => ({ x: Math.sin(info.rotY), z: Math.cos(info.rotY) });
 
 /**
- * Where the technician stands to work on `info`: one metre out from the front, a step toward the rack's left so the
- * device face stays visible from the camera's front-right shot, facing the rack.
+ * Where the technician stands to work on `info`: `dist` metres out from the rack's centre (the front face is 0.535 m
+ * from it), a step toward the rack's left so the device face stays visible from the camera's front-right shot, facing
+ * the rack. See WORK_STAND_M for the distances the work poses need.
  */
 export function standPoint(info: RackInfo, dist = 1.0, side = -0.38): XZ & { yaw: number } {
   const f = forward(info);
@@ -60,8 +72,8 @@ export function nearestPatrolIndex(p: XZ): number {
  * Axis-aligned waypoint chain from `from` (anywhere on the corridor network) to the stand point of `info`.
  * Consecutive duplicate points are dropped.
  */
-export function buildPath(from: XZ, info: RackInfo): XZ[] {
-  const stand = standPoint(info);
+export function buildPath(from: XZ, info: RackInfo, dist = 1.0, side = -0.38): XZ[] {
+  const stand = standPoint(info, dist, side);
   const pts: XZ[] = [from];
   const push = (x: number, z: number) => { const last = pts[pts.length - 1]; if (Math.abs(last.x - x) > 1e-6 || Math.abs(last.z - z) > 1e-6) pts.push({ x, z }); };
   // Get onto the row-A cold-aisle line first. From row B's corridor that means going round the nearer row end;
@@ -82,6 +94,23 @@ export function buildPath(from: XZ, info: RackInfo): XZ[] {
     push(stand.x, COLD_A_Z);
   }
   push(stand.x, stand.z);
+  return pts;
+}
+
+/**
+ * Axis-aligned waypoint chain from `from` (anywhere on the corridor network) to a point west of the rows reached via
+ * the west end passage — the NOC desk. Mirrors buildPath's "get onto a row line first" logic.
+ */
+export function buildPathWest(from: XZ, to: XZ): XZ[] {
+  const pts: XZ[] = [from];
+  const push = (x: number, z: number) => { const last = pts[pts.length - 1]; if (Math.abs(last.x - x) > 1e-6 || Math.abs(last.z - z) > 1e-6) pts.push({ x, z }); };
+  const onRowB = Math.abs(from.z - COLD_B_Z) < 0.3;
+  const onWestLane = Math.abs(from.x - END_W_X) < 0.05 && from.z <= COLD_A_Z + 0.05 && from.z >= COLD_B_Z - 0.05;
+  const onNocLane = Math.abs(from.z - to.z) < 0.05 && from.x < END_W_X + 0.05;
+  if (onNocLane) { push(to.x, to.z); return pts; }
+  if (onWestLane) { push(END_W_X, to.z); push(to.x, to.z); return pts; }
+  if (onRowB) push(END_W_X, COLD_B_Z); else { push(from.x, COLD_A_Z); push(END_W_X, COLD_A_Z); }
+  push(END_W_X, to.z); push(to.x, to.z);
   return pts;
 }
 

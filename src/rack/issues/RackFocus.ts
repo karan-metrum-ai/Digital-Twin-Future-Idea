@@ -226,27 +226,29 @@ export function buildRackFocus(THREE, rackBox, issues) {
 
 /**
  * Resolve what's under a raycaster (already set from the pointer): the rack id, plus the issue id when the hit
- * was an alarm card specifically (not a beacon or bare rack surface). Tests the alarm plates/beacons, the baked
+ * was an alarm card specifically (not a beacon or bare rack surface), and the hit's distance along the ray (Infinity
+ * for a miss) so the caller can order it against other click targets. Tests the alarm plates/beacons, the baked
  * replica groups (named `rack_replica_<row><index>`) and the interactive rack.
  */
 export function pickHit(raycaster, focus, replicas, liveRack, liveRackId, boxFor?) {
   const hitsMarker = raycaster.intersectObjects(focus.userData.pickables(), false);
   if (hitsMarker.length) {
     const o = hitsMarker[0].object;
-    return { rackId: o.userData.rackId ?? null, issueId: o.userData.issueId ?? null };
+    return { rackId: o.userData.rackId ?? null, issueId: o.userData.issueId ?? null, distance: hitsMarker[0].distance };
   }
   const targets = [...replicas.children, liveRack];
   // Optional coarse pass: `boxFor(target)` returns a world Box3 (or null to always test) — only racks whose box the
   // ray crosses are descended into, which keeps hover picking off the interactive rack's thousands of meshes.
   const tested = boxFor ? targets.filter((o) => { const b = boxFor(o); return !b || raycaster.ray.intersectsBox(b); }) : targets;
   const hits = tested.length ? raycaster.intersectObjects(tested, true) : [];
-  if (!hits.length) return { rackId: null, issueId: null };
+  const miss = { rackId: null, issueId: null, distance: Infinity };
+  if (!hits.length) return miss;
   let o = hits[0].object;
   while (o && !targets.includes(o)) o = o.parent;
-  if (!o) return { rackId: null, issueId: null };
-  if (o === liveRack) return { rackId: liveRackId, issueId: null };
+  if (!o) return miss;
+  if (o === liveRack) return { rackId: liveRackId, issueId: null, distance: hits[0].distance };
   const m = /^rack_replica_([AB])(\d+)$/.exec(o.name);
-  if (!m) return { rackId: null, issueId: null };
+  if (!m) return miss;
   const info = RACKS.find((r) => r.row === m[1] && r.index === Number(m[2]));
-  return { rackId: info ? info.id : null, issueId: null };
+  return { rackId: info ? info.id : null, issueId: null, distance: hits[0].distance };
 }

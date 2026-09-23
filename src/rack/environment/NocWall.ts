@@ -20,14 +20,12 @@ export function buildNocWall(THREE) {
     desk: M('noc_desk', { color: 0x3b3f46, roughness: 0.7, metalness: 0.2 }),
     deskTop: M('noc_desk_top', { color: 0xbfc3c8, roughness: 0.5, metalness: 0.1 }),
     monitor: M('noc_monitor', { color: 0x15171b, roughness: 0.5, metalness: 0.4 }),
-    chair: M('noc_chair', { color: 0x1d1f24, roughness: 0.8, metalness: 0.1 }),
     chrome: M('noc_chrome', { color: 0xaeb3ba, roughness: 0.3, metalness: 0.9 }),
   };
   const buckets = new Map();
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _s = new THREE.Vector3(1, 1, 1), _p = new THREE.Vector3();
   const add = (mat, geo, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => { geo.applyMatrix4(_m.compose(_p.set(x, y, z), _q.setFromEuler(_e.set(rx, ry, rz)), _s)); if (!buckets.has(mat)) buckets.set(mat, []); buckets.get(mat).push(geo); };
   const box = (mat, w, h, d, x, y, z, ry = 0) => add(mat, new THREE.BoxGeometry(w, h, d), x, y, z, 0, ry, 0);
-  const cylY = (mat, r, h, x, yc, z, seg = 16) => add(mat, new THREE.CylinderGeometry(r, r, h, seg), x, yc, z);
 
   // Video wall (faces +x into the room) and its bezel; 2×2 tile seams drawn into the canvas.
   box(mats.bezel, 0.08, H + 0.1, W + 0.1, WALL_X + 0.04, WALL_Y, WALL_Z);
@@ -35,7 +33,7 @@ export function buildNocWall(THREE) {
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = QUALITY.anisotropy;
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false })); screen.name = 'noc_screen'; screen.userData.thermalSkip = true;
   screen.position.set(WALL_X + 0.085, WALL_Y, WALL_Z); screen.rotation.y = Math.PI / 2; g.add(screen);
-  // Operator desk with two monitors and a chair.
+  // Operator desk with two monitors. No chair: the operator works standing at the desk (see ServerRackTwin standAtNoc).
   const dx = WALL_X + 0.9, dz = WALL_Z;
   box(mats.deskTop, 0.8, 0.04, 2.2, dx, 0.74, dz); for (const [ox, oz] of [[-0.32, -1.0], [0.32, -1.0], [-0.32, 1.0], [0.32, 1.0]]) box(mats.desk, 0.06, 0.72, 0.06, dx + ox, 0.36, dz + oz);
   box(mats.desk, 0.7, 0.4, 2.0, dx, 0.5, dz); // modesty panel / drawer
@@ -43,12 +41,11 @@ export function buildNocWall(THREE) {
   const mons = [];
   for (const oz of [-0.5, 0.5]) { const mc = document.createElement('canvas'); mc.width = 512; mc.height = 300; const mtex = new THREE.CanvasTexture(mc); mtex.colorSpace = THREE.SRGBColorSpace; const mm = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.34), new THREE.MeshBasicMaterial({ map: mtex, toneMapped: false })); mm.userData.thermalSkip = true; mm.position.set(dx - 0.188, 1.05, dz + oz); mm.rotation.y = Math.PI / 2; g.add(mm); mons.push({ ctx: mc.getContext('2d'), tex: mtex }); }
   box(mats.monitor, 0.3, 0.02, 0.12, dx + 0.1, 0.77, dz + 0.1); // keyboard
-  cylY(mats.chrome, 0.03, 0.4, dx + 0.75, 0.3, dz, 10); box(mats.chair, 0.5, 0.08, 0.5, dx + 0.75, 0.5, dz); box(mats.chair, 0.08, 0.5, 0.48, dx + 0.98, 0.78, dz); for (let i = 0; i < 5; i++) box(mats.chrome, 0.3, 0.02, 0.05, dx + 0.75 + Math.cos(i * 1.2566) * 0.15, 0.06, dz + Math.sin(i * 1.2566) * 0.15, i * 1.2566);
 
   for (const [mat, geos] of buckets) {
     const merged = mergeGeometries(geos, false); geos.forEach((gg) => gg.dispose());
     if (!merged) continue;
-    const m = new THREE.Mesh(merged, mat); m.name = 'noc_' + mat.name; m.castShadow = /desk|chair/.test(mat.name); m.receiveShadow = false; g.add(m);
+    const m = new THREE.Mesh(merged, mat); m.name = 'noc_' + mat.name; m.castShadow = /desk/.test(mat.name); m.receiveShadow = false; g.add(m);
   }
 
   /* ---------------- drawing ---------------- */

@@ -69,17 +69,35 @@ right edge (title, device, age, summary, raw logs) and, for any issue that carri
   CDU, with a per-row leak controller whose zone goes WET/red while a facility incident is open (INC-4825).
 - **Technician** (`people/Technician.ts`): a rigged, skinned humanoid — the CC0 mannequin from Quaternius' Universal
   Animation Library (`public/models/technician.glb`, Idle / Walk / Interact / Fixing-Kneeling clips) driven by an
-  `AnimationMixer`, dressed at runtime in a navy uniform, hi-vis vest, tool belt and hard hat — every garment is
-  sized from the skinned mesh itself (the head, torso and hip extents are measured in bone space at load), so the hat
-  sits on the skull and the vest hugs the torso. Does rounds of the aisles between jobs; a dispatch pulls them off the
+  `AnimationMixer`. The uniform — navy polo with open collar, zipped hi-vis vest with reflective bands and shoulder
+  straps, belt and buckle, work trousers, safety boots, woven cloth grain — is painted by a shader
+  (`people/uniformMaterial.ts`) from each vertex's rest-pose position, so it deforms with the skin and its edges,
+  stripes and seams are crisp per pixel; only the hard hat, lanyard/badge and tool pouch are props, sized from the mesh
+  itself so they sit on the body. Adding a logo or name tape is a few lines in that shader. Does rounds of the aisles between jobs; a dispatch pulls them off the
   rounds from wherever they are. A procedural upper-body layer (`people/armOverlay.ts`) rides on top of the clips:
   the arm swing is amplified while walking, the head turns toward the rack being walked to, the right hand rises
-  toward it over the last ~1.7 m and stays half-raised while the fix waits to be confirmed. The technician can also
-  be driven by hand — see "Driving the technician" below.
+  toward it over the last ~1.7 m and stays half-raised while the fix waits to be confirmed. Working a job, the
+  technician stands at a distance chosen per pose from the rig's measured extents (`paths.WORK_STAND_M`) so neither the
+  kneeling head nor the hands push through the rack front; above knee height they stand in the idle stance and a
+  two-bone arm solve (`armOverlay.aimAt`) places the right hand on the drawn-out FRU (or the exact port for the cable
+  reseat), leaning in at the waist for low units, eyes on the hand; kneeling jobs use the authored kneeling fix. They
+  size the job up for a beat before the hands go in and stand back up before walking off. The technician can also be
+  driven by hand — see "Driving the technician" below.
 - **Staff entrance** (`environment/Environment.ts`): steel door with push bar and window, badge reader (flashes blue
   when the technician badges in) and EXIT sign.
 - **NOC wall** (`environment/NocWall.ts`): 2×2 video wall over an operator desk, redrawn at 1 Hz with live PUE, IT
-  load, coolant supply/ΔT, open alarms by severity, power source and an IT-load sparkline.
+  load, coolant supply/ΔT, open alarms by severity, power source and an IT-load sparkline. It is a standing console
+  (no chair). **Click the desk or wall** (or let go of the keys at the desk stop in Manual) and the technician walks
+  over and stands at the console (hand to the keyboard, eyes on the wall), the camera takes the operator's point of
+  view and the **NOC console panel** (`environment/NocConsole.tsx`) goes live: the same numbers as a real panel, with
+  the incident list clickable into the issue modal. **Esc**, any arrow key, "Leave desk" or the Auto switch steps them
+  away again.
+- **Esc = out of focus**: wherever the view is focused — an open incident modal, an outlined rack (the camera flies
+  back to where it was before the fly-in), the technician parked in front of a rack in Manual (they relax and the
+  chase camera returns) or the NOC desk — Esc releases it.
+- **Incident modal beside its card**: clicking an alarm card opens the issue modal next to that card (flipped to the
+  card's left near the right edge, always inside the viewport) and it stays pinned to the card as the camera moves;
+  opened from the NOC console it anchors to the same card on the rack.
 - **Ambience**: idle LED patterns per device (`ledPatterns.ts` — activity flicker, power steady, link strobe with
   dark ports, heartbeat), dimmed or dropped by the power event; and a synthesised sound bed (`audio/Ambience.ts`:
   fan hum + moving air scaled by camera proximity, standby-power rumble, alarm/badge/latch chirps) behind the 🔇/🔊 toggle
@@ -95,19 +113,21 @@ show disabled) and listen with `onLayersChange`; the definitions live in `SCENE_
 
 ### Driving the technician
 
-Arrow keys (or WASD) take the technician off their rounds and walk them along the hall's corridor network
-(`people/corridors.ts`: the two cold aisles, the end-of-row passages, the lane in from the staff door and the approach
-lane to the interactive rack). **↑ / ↓** walk forward / back-pedal; **← / →** queue a 90° turn that is taken at the
-next junction with that branch (immediately when already standing at one). Every rack has a stop in front of it: let
-go of the keys within half a metre of one and the technician steps onto it, turns to the rack, raises a hand toward it
-and scans the device stack (`Inspecting Rack A-04` in the chip at bottom-left); the camera eases to that rack's focus
-shot. While walking, an over-the-shoulder camera follows; orbiting or zooming with the mouse pauses the follow until the
-next key press. A remediation dispatch always takes the technician over and hands control back when the job is done;
-20 s without a key and the rounds quietly resume.
+The toolbar has a **Technician** switch: **🚶 Auto** (the default) has them do rounds of the hall and answer remediation
+dispatches; **⌨ Manual** hands them to the keyboard (pressing any arrow key switches to Manual too). In Manual the arrow
+keys / WASD walk them along the hall's corridor network (`people/corridors.ts`: both cold aisles, the end-of-row
+passages, the lane in from the staff door and the approach lane to the interactive rack). **↑** walks forward, **↓** turns
+them round on the spot and walks the other way while held (they never walk backwards); **← / →** queue a 90° turn that is taken at the next junction with that branch (immediately when already
+standing at one). Every rack has a stop square in front of it, one metre out: let go of the keys anywhere along a row
+and the technician steps onto the nearest rack's stop, turns to the rack, raises a hand toward it and scans the device
+stack (`Inspecting Rack A-04` in the chip at bottom-left); the camera eases to an over-the-shoulder shot of the rack
+face. While walking, a chase camera follows behind and a little over the right shoulder; orbiting or zooming with the
+mouse pauses the follow until the next key press. The technician waits at a stop until the next key or until Auto is
+chosen again. A remediation dispatch always takes them over and hands back to whichever mode was active.
 
 Append `?debug` to the URL to expose `window.__rackTwin` (the scene's imperative API — `selectRack`, `flyTo`,
-`setCamera`, `setRemediation`, `triggerPowerEvent`, `stats`, `meshCensus`, `techDrive`, `techDriving`,
-`techStopDrive`, …) for tooling and screenshot scripts. `scripts/corridors.check.mjs` unit-checks the corridor
+`setCamera`, `setRemediation`, `triggerPowerEvent`, `stats`, `meshCensus`, `setTechMode`, `techDrive`,
+`techDriving`, …) for tooling and screenshot scripts. `scripts/corridors.check.mjs` unit-checks the corridor
 geometry in node; `scripts/drive.cdp.mjs` drives the built app in headless Chrome with real key events (needs
 `npx vite preview --port 4173 --host 127.0.0.1`).
 
@@ -155,6 +175,7 @@ src/rack/
     LifeSafety.ts             VESDA smoke detection + roof sampling pipe
     LeakDetection.ts          Leak rope under the coolant headers + per-row leak controller
     NocWall.ts                NOC video wall + operator desk, redrawn from live twin state
+    NocConsole.tsx            Live NOC console panel shown while the technician is standing at the desk
   issues/                     Rack registry, demo incidents, on-rack alarm visuals, issue modal
     issues.ts                 RACKS / DEMO_ISSUES with per-issue remediation descriptors
     RackFocus.ts              Alarm cards + roof beacons + selection hairline, rack picking
@@ -162,7 +183,7 @@ src/rack/
     RemediationScene.ts       Routes an in-flight remediation to the right on-rack act
     fruSwapAnimation.ts       Proxy FRU swap / console-strip animations (work on baked replica racks)
     remediationApi.ts         Remediation API client (real POST or mocked round trip)
-  people/                     Technician avatar (Technician.ts), procedural arm/head layer (armOverlay.ts), corridor routing (paths.ts),
+  people/                     Technician avatar (Technician.ts), shader-painted uniform (uniformMaterial.ts), procedural arm/head layer (armOverlay.ts), corridor routing (paths.ts),
                               keyboard drive: corridor network, junction turns, rack stops (corridors.ts)
   mergeStatics.ts             Per-item static merge of the interactive rack's decorative parts (draw-call budget)
   power/PowerEvent.ts         Scripted utility-loss state machine (pure TS)
